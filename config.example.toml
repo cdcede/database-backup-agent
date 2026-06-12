@@ -1,0 +1,45 @@
+# =============================================================================
+# Backup Agent Configuration
+# Copy this file to config.toml and adjust values for your environment.
+# =============================================================================
+
+[sql_server]
+host = "localhost"
+port = 1433
+
+# Authentication: "sql" or "windows"
+auth_method = "sql"
+
+# Required only when auth_method = "sql"
+username = "sa"
+password = "your_password_here"
+
+[backup]
+# Local directory where .bak and .zip files are stored
+# On Windows, you can use e.g. "C:\\Backups\\BackupAgent"
+# On macOS/Linux, you can use e.g. "/tmp/backup-agent"
+local_path = "/tmp/backup-agent"
+
+[telegram]
+enabled = false
+bot_token = ""
+chat_id = ""
+
+[storage]
+# Provider: "local" or "s3"
+provider = "local"
+
+# [storage.s3]
+# endpoint = ""
+# bucket = ""
+# region = "us-east-1"
+# access_key = ""
+# secret_key = ""
+
+[[tasks]]
+name = "Default Backup Task"
+databases = ["MyDatabase"]
+# Scheduled backup time: 24h format (HH:MM) or a valid cron expression
+schedule = "02:00"
+# Automatically delete backups older than this many days
+retention_days = 7

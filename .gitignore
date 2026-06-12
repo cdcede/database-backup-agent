@@ -1,0 +1,36 @@
+# =============================================================================
+# Backup Agent - Git Ignore
+# Exclude build files, credentials, local logs, and backup outputs.
+# =============================================================================
+
+# Rust Build Artifacts
+/target/
+
+# Local Configuration (contains database passwords, tokens & API keys)
+config.toml
+
+# Local Execution Databases, Histories & Log outputs
+*.log
+history.json
+
+# Local Backup Engine Temp Directories & Backup Outputs
+/backups/
+/temp/
+*.bak
+*.zip
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs and Editors settings
+.vscode/
+.idea/
+.rust-analyzer/
+*.rs.bk
+*.iml

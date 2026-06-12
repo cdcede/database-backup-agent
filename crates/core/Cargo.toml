@@ -1,0 +1,26 @@
+[package]
+name = "backup-agent-core"
+description = "Core business logic for Backup Agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tiberius = { workspace = true }
+tracing = { workspace = true }
+zip = { workspace = true }
+reqwest = { workspace = true }
+bincode = { workspace = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+
+[features]
+default = []
+integrated-auth-gssapi = ["tiberius/integrated-auth-gssapi"]
+s3 = ["dep:aws-config", "dep:aws-sdk-s3"]

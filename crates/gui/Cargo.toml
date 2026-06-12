@@ -1,0 +1,15 @@
+[package]
+name = "backup-agent-gui"
+description = "Desktop GUI for Backup Agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+backup-agent-core = { path = "../core" }
+eframe = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+
+
