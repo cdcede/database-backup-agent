@@ -11,7 +11,10 @@ pub fn show(
     config_opt: &Option<AppConfig>,
     active_jobs: &[BackupJob],
 ) {
-    ui.vertical(|ui| {
+    egui::ScrollArea::vertical()
+        .max_width(ui.available_width() - 24.0)
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
         ui.heading(
             egui::RichText::new("Dashboard")
                 .color(egui::Color32::from_rgb(255, 255, 255))
@@ -39,9 +42,10 @@ pub fn show(
             return;
         };
 
-        // 1. Service Status summary cards
-        ui.horizontal(|ui| {
+        // 1. Service Status summary cards (wrapped horizontally for responsiveness)
+        ui.horizontal_wrapped(|ui| {
             ui.style_mut().spacing.item_spacing.x = 16.0;
+            ui.style_mut().spacing.item_spacing.y = 16.0;
 
             // Database host card
             draw_card(ui, "🖥️ Database Server", &config.sql_server.host, &format!("Port: {}", config.sql_server.port));
@@ -223,6 +227,7 @@ pub fn show(
                     }
                 });
             });
+        });
     });
 }
 
@@ -234,7 +239,7 @@ fn draw_card(ui: &mut egui::Ui, title: &str, value: &str, sub: &str) {
         .inner_margin(16.0)
         .show(ui, |ui| {
             ui.set_width(170.0);
-            ui.set_height(100.0);
+            ui.set_height(105.0);
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(title)
@@ -250,12 +255,13 @@ fn draw_card(ui: &mut egui::Ui, title: &str, value: &str, sub: &str) {
                         .strong(),
                 );
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(sub)
-                        .color(egui::Color32::from_rgb(99, 102, 241)) // Electric Indigo
-                        .size(11.0)
-                        .italics(),
-                );
+                
+                // Truncate the card subtext if it's too long, preventing it from overflowing the card boundary
+                let text = egui::RichText::new(sub)
+                    .color(egui::Color32::from_rgb(99, 102, 241)) // Electric Indigo
+                    .size(10.5)
+                    .italics();
+                ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Truncate));
             });
         });
 }

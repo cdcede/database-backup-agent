@@ -50,8 +50,8 @@ pub fn show(ui: &mut egui::Ui, history: &[BackupResult]) {
             return;
         }
 
-        // Scrollable table area
-        egui::ScrollArea::vertical()
+        // Scrollable table area (both vertical and horizontal to support smaller screens)
+        egui::ScrollArea::both()
             .max_width(ui.available_width() - 24.0)
             .show(ui, |ui| {
                 // Table header
