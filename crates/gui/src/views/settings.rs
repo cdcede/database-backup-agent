@@ -214,6 +214,7 @@ impl SettingsState {
                 provider: storage_provider,
                 s3,
             },
+            service: Default::default(),
         };
 
         Ok(config)
@@ -551,7 +552,7 @@ pub fn show(ui: &mut egui::Ui, client: &IpcClientHandle, config_opt: &Option<App
                                                         }
                                                         ui.add_space(12.0);
                                                         ui.label("Time (HH:MM):");
-                                                        text_input(ui, &mut active_task.weekly_time, false);
+                                                        text_input(ui, &mut active_task.monthly_time, false);
                                                     });
                                                 }
                                                 ScheduleMode::Custom => {

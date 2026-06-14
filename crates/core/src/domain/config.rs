@@ -9,6 +9,7 @@
 //!   [telegram]    → TelegramConfig
 //!   [storage]     → StorageConfig
 //!   [storage.s3]  → S3Config
+//!   [service]     → ServiceConfig
 
 use std::path::PathBuf;
 
@@ -35,6 +36,38 @@ pub struct AppConfig {
     pub telegram: TelegramConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    /// Service runtime tuning (history cap, log rotation threshold).
+    /// The entire `[service]` section is optional — omitting it uses defaults.
+    #[serde(default)]
+    pub service: ServiceConfig,
+}
+
+/// Service runtime configuration.
+///
+/// Maps to the `[service]` TOML section. All fields have serde defaults so
+/// existing `config.toml` files that lack this section keep working.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServiceConfig {
+    /// Maximum number of backup history entries to keep on disk.
+    /// Oldest entries are removed first when the cap is exceeded.
+    /// Default: 500. A value of 0 is treated as unconfigured and falls back to 500.
+    #[serde(default = "default_history_max_entries")]
+    pub history_max_entries: usize,
+    /// Size threshold (bytes) at which `backup-agent.log` is rotated on startup.
+    /// Default: 10 MiB (10_485_760 bytes).
+    /// NOTE: this field is read during config validation but the actual rotation
+    /// in `main.rs` uses the hardcoded 10 MiB default because the config is not
+    /// yet loaded at log-rotation time. Configurable threshold is a future enhancement.
+    #[serde(default = "default_log_rotate_threshold_bytes")]
+    pub log_rotate_threshold_bytes: u64,
+}
+
+fn default_history_max_entries() -> usize {
+    500
+}
+
+fn default_log_rotate_threshold_bytes() -> u64 {
+    10 * 1024 * 1024
 }
 
 /// SQL Server connection settings.
@@ -131,6 +164,16 @@ impl Default for AppConfig {
             tasks: vec![BackupTaskConfig::default()],
             telegram: TelegramConfig::default(),
             storage: StorageConfig::default(),
+            service: ServiceConfig::default(),
+        }
+    }
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            history_max_entries: default_history_max_entries(),
+            log_rotate_threshold_bytes: default_log_rotate_threshold_bytes(),
         }
     }
 }
@@ -212,6 +255,7 @@ impl AppConfig {
         self.validate_tasks(&mut errors);
         self.validate_telegram(&mut errors);
         self.validate_storage(&mut errors);
+        self.validate_service(&mut errors);
         errors
     }
 
@@ -315,6 +359,21 @@ impl AppConfig {
                     }
                 }
             }
+        }
+    }
+
+    fn validate_service(&self, errors: &mut Vec<String>) {
+        // history_max_entries = 0 is a misconfiguration; callers should treat it
+        // as the default (500). We report it so users know the field was ignored.
+        if self.service.history_max_entries == 0 {
+            errors.push(
+                "service.history_max_entries is 0 — must be > 0 (defaulting to 500)".into(),
+            );
+        }
+        if self.service.log_rotate_threshold_bytes < 1024 {
+            errors.push(
+                "service.log_rotate_threshold_bytes must be >= 1024 (1 KiB)".into(),
+            );
         }
     }
 }
@@ -450,5 +509,104 @@ mod tests {
         assert!(!is_valid_schedule("12:60")); // Minute too high
         assert!(!is_valid_schedule("12")); // No colon
         assert!(!is_valid_schedule("")); // Empty
+    }
+
+    // -------------------------------------------------------------------------
+    // T5.1 — ServiceConfig tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn service_config_default_values() {
+        let cfg = ServiceConfig::default();
+        assert_eq!(cfg.history_max_entries, 500);
+        assert_eq!(cfg.log_rotate_threshold_bytes, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn app_config_default_includes_service_defaults() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.service.history_max_entries, 500);
+        assert_eq!(cfg.service.log_rotate_threshold_bytes, 10_485_760);
+    }
+
+    #[test]
+    fn toml_without_service_section_loads_defaults() {
+        // A minimal TOML that does not include [service] must still deserialize
+        // with default ServiceConfig values (backward-compatibility).
+        let toml = r#"
+            [sql_server]
+            host = "localhost"
+            port = 1433
+            auth_method = "sql"
+            username = "sa"
+            password = "secret"
+
+            [backup]
+            local_path = "/tmp/test"
+
+            [storage]
+            provider = "local"
+        "#;
+        let cfg: AppConfig = toml::from_str(toml).expect("Should parse without [service]");
+        assert_eq!(cfg.service.history_max_entries, 500);
+        assert_eq!(cfg.service.log_rotate_threshold_bytes, 10_485_760);
+    }
+
+    #[test]
+    fn toml_with_service_section_respected() {
+        let toml = r#"
+            [sql_server]
+            host = "localhost"
+            port = 1433
+            auth_method = "sql"
+            username = "sa"
+            password = "secret"
+
+            [backup]
+            local_path = "/tmp/test"
+
+            [storage]
+            provider = "local"
+
+            [service]
+            history_max_entries = 200
+            log_rotate_threshold_bytes = 5242880
+        "#;
+        let cfg: AppConfig = toml::from_str(toml).expect("Should parse with [service]");
+        assert_eq!(cfg.service.history_max_entries, 200);
+        assert_eq!(cfg.service.log_rotate_threshold_bytes, 5_242_880);
+    }
+
+    #[test]
+    fn validate_rejects_history_max_entries_zero() {
+        let mut config = valid_config();
+        config.service.history_max_entries = 0;
+        let errors = config.validate();
+        assert!(
+            errors.iter().any(|e| e.contains("history_max_entries")),
+            "Should flag history_max_entries = 0, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_log_rotate_threshold_below_1kib() {
+        let mut config = valid_config();
+        config.service.log_rotate_threshold_bytes = 512;
+        let errors = config.validate();
+        assert!(
+            errors.iter().any(|e| e.contains("log_rotate_threshold_bytes")),
+            "Should flag threshold < 1024, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_valid_service_config() {
+        let config = valid_config();
+        // Default ServiceConfig should pass validation
+        let errors = config.validate();
+        assert!(
+            !errors.iter().any(|e| e.contains("service")),
+            "Default service config should pass validation, got: {errors:?}"
+        );
     }
 }

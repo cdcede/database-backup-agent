@@ -153,6 +153,7 @@ mod tests {
             }],
             telegram: Default::default(),
             storage: Default::default(),
+            service: Default::default(),
         };
 
         let request = IpcRequest::UpdateConfig(config.clone());

@@ -34,3 +34,10 @@ Thumbs.db
 .rust-analyzer/
 *.rs.bk
 *.iml
+
+# Installer & Distribution Artifacts
+installer/Output/
+/dist/
+
+# ATL Tooling Metadata
+.atl/

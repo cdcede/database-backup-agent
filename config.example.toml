@@ -43,3 +43,17 @@ databases = ["MyDatabase"]
 schedule = "02:00"
 # Automatically delete backups older than this many days
 retention_days = 7
+
+# =============================================================================
+# [service] — Service runtime tuning (all fields are optional with defaults)
+# =============================================================================
+# [service]
+# Maximum number of history entries kept in history.json.
+# Oldest entries are removed first. Must be > 0. Default: 500.
+# history_max_entries = 500
+#
+# Size (bytes) at which backup-agent.log is rotated on next startup.
+# NOTE: this value is reserved for future use; the current implementation
+# always uses the hardcoded 10 MiB default at startup because config is not
+# yet loaded when log rotation runs.
+# log_rotate_threshold_bytes = 10485760

@@ -177,8 +177,10 @@ pub fn show(
                         return;
                     }
 
-                    static mut SELECTED_INDEX: usize = 0;
-                    let mut selected = unsafe { SELECTED_INDEX };
+                    let id = egui::Id::new("dashboard.manual_backup.selected_index");
+                    let mut selected: usize = ui.ctx().data(|d| {
+                        d.get_temp::<usize>(id).unwrap_or(0)
+                    });
                     if selected >= db_list.len() {
                         selected = 0;
                     }
@@ -190,8 +192,8 @@ pub fn show(
                                 ui.selectable_value(&mut selected, idx, db);
                             }
                         });
-                    
-                    unsafe { SELECTED_INDEX = selected };
+
+                    ui.ctx().data_mut(|d| d.insert_temp(id, selected));
 
                     ui.add_space(12.0);
 

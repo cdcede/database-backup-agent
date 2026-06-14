@@ -38,6 +38,30 @@ fn main() {
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_default();
+
+    // Startup log rotation — runs BEFORE the logger is initialized so we cannot
+    // log errors here. Any failure is silently ignored; the logger will open the
+    // existing (possibly large) file and keep appending.
+    //
+    // NOTE: The rotation threshold is hardcoded to 10 MiB at this point because
+    // AppConfig has not been loaded yet. The `log_rotate_threshold_bytes` field in
+    // `config.toml` ([service] section) is reserved for future use when config is
+    // loaded earlier in startup.
+    {
+        const LOG_ROTATE_THRESHOLD: u64 = 10 * 1024 * 1024; // 10 MiB
+        let log_path = exe_dir.join("backup-agent.log");
+        let backup_path = exe_dir.join("backup-agent.log.1");
+        if let Ok(meta) = std::fs::metadata(&log_path) {
+            if meta.len() >= LOG_ROTATE_THRESHOLD {
+                // Overwrite any existing .log.1 backup, then rename current log.
+                // Both errors are intentionally swallowed — worst case the existing
+                // file keeps growing and rotation retries on the next startup.
+                let _ = std::fs::remove_file(&backup_path);
+                let _ = std::fs::rename(&log_path, &backup_path);
+            }
+        }
+    }
+
     if let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

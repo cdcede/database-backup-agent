@@ -169,6 +169,21 @@ fn save_history(exe_dir: &std::path::Path, history: &[BackupResult]) {
     }
 }
 
+/// Enforce the history cap by removing the oldest entries from the front.
+///
+/// Entries are assumed to be in chronological order (oldest first), which is
+/// the natural insertion order. Drain from the front removes the oldest entries.
+///
+/// A `max` value of 0 is treated as unconfigured and falls back to the default
+/// cap of 500 to match the spec requirement.
+pub(crate) fn cap_history(history: &mut Vec<BackupResult>, max: usize) {
+    let effective_max = if max == 0 { 500 } else { max };
+    if history.len() > effective_max {
+        let drain_count = history.len() - effective_max;
+        history.drain(0..drain_count);
+    }
+}
+
 struct NoopNotifier;
 
 impl backup_agent_core::ports::notifier::Notifier for NoopNotifier {
@@ -320,6 +335,7 @@ async fn execute_single_backup(db_name: &str, state: Arc<DaemonState>, retention
     {
         let mut history = state.history.lock().await;
         history.push(result.clone());
+        cap_history(&mut history, config.service.history_max_entries);
         save_history(&state.exe_dir, &history);
     }
 
@@ -520,6 +536,90 @@ fn run_service_loop() -> Result<(), windows_service::Error> {
 
     tracing::info!("Windows Service stopped cleanly");
     Ok(())
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backup_agent_core::domain::backup_result::{BackupResult, BackupStatus};
+    use chrono::Utc;
+
+    fn make_result(offset_secs: i64) -> BackupResult {
+        use backup_agent_core::domain::backup_job::BackupJob;
+        let mut job = BackupJob::new("TestDB");
+        job.start();
+        job.complete();
+        let ts = Utc::now() + chrono::Duration::seconds(offset_secs);
+        // Construct directly so we can control the timestamp
+        BackupResult {
+            job_id: job.id,
+            database_name: "TestDB".to_string(),
+            status: BackupStatus::Completed,
+            started_at: ts,
+            completed_at: ts,
+            duration_secs: 1,
+            backup_size_bytes: 1024,
+            compressed_size_bytes: None,
+            storage_destination: "local:/tmp/test.zip".to_string(),
+            error_message: None,
+        }
+    }
+
+    /// T5.2 — 300 entries with cap 500 → no entries removed
+    #[test]
+    fn cap_history_below_limit_leaves_entries_unchanged() {
+        let mut history: Vec<BackupResult> = (0..300).map(|i| make_result(i)).collect();
+        cap_history(&mut history, 500);
+        assert_eq!(history.len(), 300);
+    }
+
+    /// T5.2 — 600 entries with cap 500 → only 500 most recent kept
+    #[test]
+    fn cap_history_above_limit_keeps_most_recent() {
+        // entries at offsets 0..600; highest offset = most recent
+        let mut history: Vec<BackupResult> = (0..600i64).map(|i| make_result(i)).collect();
+        // Capture timestamps before truncation
+        let most_recent_ts = history[599].started_at;
+        let oldest_kept_ts = history[100].started_at;
+        let oldest_removed_ts = history[99].started_at;
+
+        cap_history(&mut history, 500);
+
+        assert_eq!(history.len(), 500, "Should keep exactly 500 entries");
+        assert_eq!(
+            history[499].started_at, most_recent_ts,
+            "Last element must be the most recent entry (offset 599)"
+        );
+        assert_eq!(
+            history[0].started_at, oldest_kept_ts,
+            "First element must be oldest kept entry (offset 100)"
+        );
+        // The entry at offset 99 must have been removed
+        assert!(
+            history.iter().all(|r| r.started_at != oldest_removed_ts),
+            "Entry at offset 99 should have been removed"
+        );
+    }
+
+    /// T5.2 — cap=0 is treated as 500
+    #[test]
+    fn cap_history_zero_uses_default_500() {
+        let mut history: Vec<BackupResult> = (0..600).map(|i| make_result(i)).collect();
+        cap_history(&mut history, 0);
+        assert_eq!(history.len(), 500, "cap=0 should fall back to 500");
+    }
+
+    /// Exactly at the cap — no entries removed
+    #[test]
+    fn cap_history_exactly_at_limit_unchanged() {
+        let mut history: Vec<BackupResult> = (0..500).map(|i| make_result(i)).collect();
+        cap_history(&mut history, 500);
+        assert_eq!(history.len(), 500);
+    }
 }
 
 /// SCM dispatcher entry point to start the dispatcher loop.
