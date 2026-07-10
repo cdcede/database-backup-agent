@@ -92,8 +92,11 @@ pub fn run_in_console() {
         };
 
         if let Err(e) = config.ensure_valid() {
-            tracing::error!("Configuration validation failed: {}", e);
-            return;
+            // Do NOT abort startup: the IPC server must still come up so the GUI
+            // can connect and let the user fix the configuration (e.g. before
+            // SQL Server is even installed). Scheduled backups will simply fail
+            // individually until a valid config is saved via the GUI.
+            tracing::warn!("Configuration is incomplete/invalid, starting anyway so it can be fixed via the GUI: {}", e);
         }
 
         // Load historical records
@@ -458,16 +461,13 @@ fn run_service_loop() -> Result<(), windows_service::Error> {
         exit_code: ServiceExitCode::Win32(0),
         checkpoint: 0,
         wait_hint: std::time::Duration::from_secs(5),
+        process_id: None,
     })?;
 
     // Create the Tokio runtime to execute async I/O and tasks
-    let rt = tokio::runtime::Runtime::new().map_err(|e| {
-        windows_service::Error::Win32(e.raw_os_error().unwrap_or(1) as u32)
-    })?;
+    let rt = tokio::runtime::Runtime::new().map_err(windows_service::Error::Winapi)?;
 
-    let context = ServiceContext::resolve().map_err(|e| {
-        windows_service::Error::Win32(e.raw_os_error().unwrap_or(1) as u32)
-    })?;
+    let context = ServiceContext::resolve().map_err(windows_service::Error::Winapi)?;
 
     rt.block_on(async {
         tracing::info!("Async service scheduler and loop active");
@@ -482,8 +482,11 @@ fn run_service_loop() -> Result<(), windows_service::Error> {
         };
 
         if let Err(e) = config.ensure_valid() {
-            tracing::error!("Configuration validation failed: {}", e);
-            return;
+            // Do NOT abort startup: the IPC server must still come up so the GUI
+            // can connect and let the user fix the configuration (e.g. before
+            // SQL Server is even installed). Scheduled backups will simply fail
+            // individually until a valid config is saved via the GUI.
+            tracing::warn!("Configuration is incomplete/invalid, starting anyway so it can be fixed via the GUI: {}", e);
         }
 
         // Load historical records
@@ -532,6 +535,7 @@ fn run_service_loop() -> Result<(), windows_service::Error> {
         exit_code: ServiceExitCode::Win32(0),
         checkpoint: 0,
         wait_hint: std::time::Duration::default(),
+        process_id: None,
     })?;
 
     tracing::info!("Windows Service stopped cleanly");
@@ -633,7 +637,7 @@ pub fn start_dispatcher() -> Result<bool, windows_service::Error> {
     tracing::debug!("Attempting SCM dispatcher handshake");
     match service_dispatcher::start("BackupAgent", ffi_service_main) {
         Ok(_) => Ok(true),
-        Err(windows_service::Error::Win32(1063)) => {
+        Err(windows_service::Error::Winapi(ref e)) if e.raw_os_error() == Some(1063) => {
             // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT -> Interactive CLI mode
             Ok(false)
         }

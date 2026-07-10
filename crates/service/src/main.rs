@@ -135,7 +135,8 @@ fn install_service() -> std::io::Result<()> {
         .args(&[
             "create",
             "BackupAgent",
-            &format!("binPath= \"{}\"", current_exe.to_string_lossy()),
+            "binPath=",
+            &format!("\"{}\"", current_exe.to_string_lossy()),
             "start=",
             "auto",
             "DisplayName=",

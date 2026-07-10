@@ -41,3 +41,6 @@ installer/Output/
 
 # ATL Tooling Metadata
 .atl/
+
+# Claude Code local tooling config
+.claude/

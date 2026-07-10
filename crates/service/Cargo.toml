@@ -16,7 +16,7 @@ serde_json = { workspace = true }
 
 
 [target.'cfg(windows)'.dependencies]
-windows-service = "0.7"
+windows-service = "0.6"
 
 [features]
 s3 = ["backup-agent-core/s3"]
