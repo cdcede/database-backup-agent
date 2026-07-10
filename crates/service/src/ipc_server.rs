@@ -78,11 +78,19 @@ async fn start_windows_ipc(state: Arc<DaemonState>, mut shutdown_rx: tokio::sync
     let pipe_name = r"\\.\pipe\BackupAgentPipe";
     tracing::info!("IPC Server listening on Named Pipe: {}", pipe_name);
 
+    // `first_pipe_instance(true)` is only valid on the very first instance of the
+    // pipe — it tells Windows to fail if another instance already exists. Every
+    // subsequent instance created by this loop (one per accepted client, since
+    // clients open a fresh connection per request) must NOT set it, otherwise
+    // CreateNamedPipe returns ERROR_ACCESS_DENIED (5) forever after the first
+    // client connects, and the server can never accept another connection.
+    let mut is_first_instance = true;
+
     loop {
-        let mut server = match ServerOptions::new()
-            .first_pipe_instance(true)
-            .create(pipe_name)
-        {
+        let mut server_options = ServerOptions::new();
+        server_options.first_pipe_instance(is_first_instance);
+
+        let server = match server_options.create(pipe_name) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to create named pipe server: {}", e);
@@ -90,6 +98,7 @@ async fn start_windows_ipc(state: Arc<DaemonState>, mut shutdown_rx: tokio::sync
                 continue;
             }
         };
+        is_first_instance = false;
 
         tokio::select! {
             connect_res = server.connect() => {
