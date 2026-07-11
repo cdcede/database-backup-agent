@@ -3,9 +3,41 @@
 This directory contains the Inno Setup 6 script that builds the Windows
 `.exe` installer for Backup Agent.
 
+## This branch: Windows Server 2012 R2 / Windows 7+ compatibility
+
+This branch (`compat/windows-server-2012r2`) targets older Windows versions
+(Windows 7 / Server 2008 R2 through Windows 8.1 / Server 2012 R2), which the
+`main` branch does **not** support. Two things differ here from `main`:
+
+1. **Pinned Rust toolchain.** Rust 1.78+ raised the minimum supported Windows
+   version for `*-pc-windows-msvc` to Windows 10, so binaries built with a
+   modern Rust toolchain will not even launch on Server 2012 R2. This branch
+   pins the workspace to **Rust 1.77.2** via `rust-toolchain.toml` — the last
+   release that still targets Windows 7/8/8.1 (`rustup` picks it up
+   automatically; no manual `+1.77.2` flag needed). Because of this, several
+   dependencies are pinned to older, edition-2021-compatible versions in
+   `Cargo.lock` (newer releases of `clap`, `indexmap`, `image`, `quinn`, etc.
+   require Cargo 1.85+ to even parse their manifest). Treat this lockfile as
+   load-bearing: avoid running a plain `cargo update` on this branch, since it
+   will happily re-pick incompatible versions cargo 1.77.2 can't build.
+2. **No S3 storage support.** `aws-sdk-s3` and its transitive dependencies
+   (`aws-sigv4`, etc.) are a major source of edition-2024-only releases, so
+   the `s3` Cargo feature was removed entirely on this branch. Local storage
+   is unaffected.
+3. **Visual C++ Redistributable required on the target machine.** Rust/MSVC
+   binaries link against the Universal C Runtime (`api-ms-win-crt-*.dll`),
+   which ships built into Windows 10+ but is **not** present out of the box
+   on Windows 7/8/8.1/Server 2012 R2. Install the
+   [Visual C++ 2015-2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+   on the target machine before running the installer — `setup.iss` checks
+   for it and warns (non-blocking) if it looks missing.
+
 ## Prerequisites
 
-- **Windows 10+** (target platform)
+- **Windows 7 / Server 2008 R2 or newer** (target platform on this branch;
+  `main` requires Windows 10+)
+- **Rust 1.77.2** (installed automatically via `rustup` from
+  `rust-toolchain.toml` when you run `cargo build` in the repo root)
 - **Inno Setup 6+** — download from <https://jrsoftware.org/isinfo.php>
   - The `iscc.exe` command-line compiler must be on your `PATH`, or invoke it
     with its full path (default: `C:\Program Files (x86)\Inno Setup 6\iscc.exe`)

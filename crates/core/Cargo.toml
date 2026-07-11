@@ -17,10 +17,12 @@ tracing = { workspace = true }
 zip = { workspace = true }
 reqwest = { workspace = true }
 bincode = { workspace = true }
-aws-config = { workspace = true, optional = true }
-aws-sdk-s3 = { workspace = true, optional = true }
 
 [features]
 default = []
 integrated-auth-gssapi = ["tiberius/integrated-auth-gssapi"]
-s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+# S3 support (and its "s3" feature) is dropped on this branch: aws-sdk-s3's
+# transitive deps (aws-sigv4 -> sha2/cpufeatures, plus a chunk of the
+# reqwest HTTP/3 stack) require Cargo 1.85+ (edition2024), which is
+# incompatible with the Rust 1.77.2 toolchain this branch is pinned to for
+# Windows Server 2012 R2 support. Local storage remains fully supported.

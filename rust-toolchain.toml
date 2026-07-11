@@ -1,0 +1,7 @@
+[toolchain]
+# Pinned to the last Rust release that supports Windows 7 / 8 / 8.1 / Server
+# 2012 R2 (NT 6.1-6.3) as a Tier 1 target. Rust 1.78+ raised the minimum
+# supported Windows version to Windows 10 — binaries built with a newer
+# toolchain will not run on these older OSes at all.
+# See: https://blog.rust-lang.org/2024/02/26/Windows-7.html
+channel = "1.77.2"

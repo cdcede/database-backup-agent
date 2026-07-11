@@ -47,8 +47,12 @@ PrivilegesRequired=admin
 Compression=lzma2
 SolidCompression=yes
 
-; Minimum OS: Windows 10
-MinVersion=10.0
+; Minimum OS: Windows 7 / Server 2008 R2 (NT 6.1). This branch is built with
+; a Rust 1.77.2 toolchain (see rust-toolchain.toml) specifically to support
+; Windows Server 2012 R2 (NT 6.3), which is below the Windows 10 floor that
+; Rust 1.78+ requires. See installer/README.md for the Visual C++ Redistributable
+; prerequisite this build needs on pre-Windows-10 targets.
+MinVersion=6.1sp1
 
 ; Show wizard pages
 WizardStyle=modern
@@ -95,12 +99,34 @@ Filename: "{app}\{#ServiceExe}"; Parameters: "uninstall"; \
 
 [Code]
 // ---------------------------------------------------------------------------
-// PrepareToInstall — called before file extraction begins.
+// InitializeSetup — called before the wizard UI is shown.
 //
-// On an upgrade (previous installation detected), we stop the running service
-// so that its binary can be overwritten. If the service fails to stop within
-// the timeout we abort the installation to avoid partially replaced binaries.
+// This build targets Windows 7 / Server 2008 R2 and up (see MinVersion),
+// including Windows Server 2012 R2. On those pre-Windows-10 OSes, the
+// binaries need the Visual C++ 2015-2022 Redistributable (x64) installed —
+// it provides the Universal C Runtime (api-ms-win-crt-*.dll) that a
+// Rust/MSVC build links against, which ships built into Windows 10+ but not
+// into older OSes. Warn (non-blocking) if it looks absent.
 // ---------------------------------------------------------------------------
+
+function VCRedistInstalled: Boolean;
+begin
+  Result := RegKeyExists(HKLM, 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64') or
+            RegKeyExists(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\X64');
+end;
+
+function InitializeSetup: Boolean;
+begin
+  Result := True;
+  if not VCRedistInstalled then
+  begin
+    if MsgBox('No se detectó el Visual C++ Redistributable 2015-2022 (x64), requerido por Backup Agent en este sistema operativo.' + #13#10 + #13#10 +
+              'Descárgalo e instálalo desde: https://aka.ms/vs/17/release/vc_redist.x64.exe' + #13#10 + #13#10 +
+              '¿Continuar con la instalación de todos modos?',
+              mbConfirmation, MB_YESNO) = IDNO then
+      Result := False;
+  end;
+end;
 
 var
   ResultCode: Integer;
