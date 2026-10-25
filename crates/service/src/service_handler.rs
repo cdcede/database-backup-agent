@@ -16,7 +16,9 @@ use backup_agent_core::domain::backup_result::BackupResult;
 use backup_agent_core::infrastructure::telegram::TelegramNotifier;
 use backup_agent_core::infrastructure::mssql::MssqlBackup;
 use backup_agent_core::infrastructure::compression::ZipCompressor;
+use backup_agent_core::infrastructure::storage::google_drive::GoogleDriveStorage;
 use backup_agent_core::infrastructure::storage::local::LocalStorage;
+use backup_agent_core::infrastructure::storage::mirrored::MirroredStorage;
 #[cfg(feature = "s3")]
 use backup_agent_core::infrastructure::storage::s3::S3Storage;
 use backup_agent_core::application::backup_service::BackupOrchestrator;
@@ -324,6 +326,14 @@ async fn execute_single_backup(db_name: &str, state: Arc<DaemonState>, retention
 
     let db = MssqlBackup::new(config.sql_server.clone());
     let compressor = ZipCompressor::new();
+
+    // Optional cloud mirror: the primary copy is written first, then uploaded to Google Drive.
+    let gdrive = config
+        .storage
+        .google_drive
+        .enabled
+        .then(|| GoogleDriveStorage::new(&config.storage.google_drive));
+    let storage = MirroredStorage::new(storage, gdrive);
 
     let orchestrator = BackupOrchestrator::new(db, compressor, storage, notifier);
     let result = orchestrator.run_backup(db_name, &temp_dir, &storage_filename).await;

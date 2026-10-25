@@ -36,6 +36,37 @@ provider = "local"
 # access_key = ""
 # secret_key = ""
 
+# -----------------------------------------------------------------------------
+# [storage.google_drive] — optional cloud mirror
+# -----------------------------------------------------------------------------
+# When enabled, every backup saved by the provider above is ALSO uploaded to
+# Google Drive. The local copy is always written first; if the Drive upload
+# fails, the job is reported as failed (Telegram alert) but the local copy stays.
+#
+# One-time setup (OAuth "Desktop app" credentials + refresh token):
+#   1. https://console.cloud.google.com -> create a project -> enable "Google Drive API".
+#   2. "OAuth consent screen": External, add your Google account as a test user,
+#      then PUBLISH the app ("In production"). Refresh tokens of apps left in
+#      "Testing" expire after 7 days.
+#   3. "Credentials" -> Create OAuth client ID -> type "Desktop app"
+#      -> copy the client ID and client secret.
+#   4. https://developers.google.com/oauthplayground -> gear icon ->
+#      "Use your own OAuth credentials" -> paste the client ID/secret.
+#      Authorize the scope https://www.googleapis.com/auth/drive.file,
+#      then "Exchange authorization code for tokens" -> copy the refresh token.
+#   5. (Optional) Create a folder in Drive and copy its ID: the last segment of
+#      https://drive.google.com/drive/folders/<FOLDER_ID>. Leave empty for root.
+#      With the drive.file scope, use a folder created by this app or the root;
+#      use the broader https://www.googleapis.com/auth/drive scope to target an
+#      existing folder you created manually.
+#
+# [storage.google_drive]
+# enabled = true
+# client_id = "1234567890-xxxx.apps.googleusercontent.com"
+# client_secret = ""
+# refresh_token = ""
+# folder_id = ""
+
 [[tasks]]
 name = "Default Backup Task"
 databases = ["MyDatabase"]

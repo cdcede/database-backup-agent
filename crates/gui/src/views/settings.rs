@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use crate::ipc_client::IpcClientHandle;
-use backup_agent_core::domain::config::{AppConfig, AuthMethod, SqlServerConfig, BackupConfig, StorageConfig, StorageProviderType, S3Config, TelegramConfig, BackupTaskConfig};
+use backup_agent_core::domain::config::{AppConfig, AuthMethod, SqlServerConfig, BackupConfig, StorageConfig, StorageProviderType, S3Config, TelegramConfig, BackupTaskConfig, GoogleDriveConfig};
 use backup_agent_core::ipc::messages::{IpcRequest, IpcResponse};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -71,6 +71,11 @@ pub struct SettingsState {
     pub s3_region: String,
     pub s3_access_key: String,
     pub s3_secret_key: String,
+    pub gdrive_enabled: bool,
+    pub gdrive_client_id: String,
+    pub gdrive_client_secret: String,
+    pub gdrive_refresh_token: String,
+    pub gdrive_folder_id: String,
     pub telegram_enabled: bool,
     pub telegram_bot_token: String,
     pub telegram_chat_id: String,
@@ -120,6 +125,11 @@ impl SettingsState {
             s3_region: config.storage.s3.as_ref().map(|s3| s3.region.clone()).unwrap_or_default(),
             s3_access_key: config.storage.s3.as_ref().map(|s3| s3.access_key.clone()).unwrap_or_default(),
             s3_secret_key: config.storage.s3.as_ref().map(|s3| s3.secret_key.clone()).unwrap_or_default(),
+            gdrive_enabled: config.storage.google_drive.enabled,
+            gdrive_client_id: config.storage.google_drive.client_id.clone(),
+            gdrive_client_secret: config.storage.google_drive.client_secret.clone(),
+            gdrive_refresh_token: config.storage.google_drive.refresh_token.clone(),
+            gdrive_folder_id: config.storage.google_drive.folder_id.clone().unwrap_or_default(),
             telegram_enabled: config.telegram.enabled,
             telegram_bot_token: config.telegram.bot_token.clone(),
             telegram_chat_id: config.telegram.chat_id.clone(),
@@ -213,12 +223,30 @@ impl SettingsState {
             storage: StorageConfig {
                 provider: storage_provider,
                 s3,
+                google_drive: GoogleDriveConfig {
+                    enabled: self.gdrive_enabled,
+                    client_id: self.gdrive_client_id.trim().to_string(),
+                    client_secret: self.gdrive_client_secret.trim().to_string(),
+                    refresh_token: self.gdrive_refresh_token.trim().to_string(),
+                    folder_id: extract_drive_folder_id(&self.gdrive_folder_id),
+                },
             },
             service: Default::default(),
         };
 
         Ok(config)
     }
+}
+
+/// Accept either a raw folder ID or a pasted folder URL
+/// (`https://drive.google.com/drive/folders/<id>?usp=sharing`). Empty = Drive root.
+fn extract_drive_folder_id(input: &str) -> Option<String> {
+    let input = input.trim();
+    let id = match input.split_once("/folders/") {
+        Some((_, rest)) => rest.split(|c| c == '?' || c == '/' || c == '#').next().unwrap_or(""),
+        None => input,
+    };
+    if id.is_empty() { None } else { Some(id.to_string()) }
 }
 
 static SETTINGS_STATE: OnceLock<Mutex<Option<SettingsState>>> = OnceLock::new();
@@ -667,6 +695,29 @@ pub fn show(ui: &mut egui::Ui, client: &IpcClientHandle, config_opt: &Option<App
                                     text_input(ui, &mut state.s3_secret_key, true);
                                     ui.end_row();
                                 }
+
+                                ui.label("Also copy to Google Drive:");
+                                ui.checkbox(&mut state.gdrive_enabled, "");
+                                ui.end_row();
+
+                                if state.gdrive_enabled {
+                                    ui.label("OAuth Client ID:");
+                                    text_input(ui, &mut state.gdrive_client_id, false);
+                                    ui.end_row();
+
+                                    ui.label("OAuth Client Secret:");
+                                    text_input(ui, &mut state.gdrive_client_secret, true);
+                                    ui.end_row();
+
+                                    ui.label("OAuth Refresh Token:");
+                                    text_input(ui, &mut state.gdrive_refresh_token, true);
+                                    ui.end_row();
+
+                                    ui.label("Drive folder (ID or URL):");
+                                    text_input(ui, &mut state.gdrive_folder_id, false)
+                                        .on_hover_text("Leave empty to upload to the Drive root folder");
+                                    ui.end_row();
+                                }
                             });
                     });
 
@@ -1022,5 +1073,19 @@ mod tests {
 
         let compiled = compile_schedule_string(parsed.0, &parsed.1, &parsed.2, &parsed.3, parsed.4, &parsed.5, &parsed.6);
         assert_eq!(compiled.unwrap(), "0 0 12 5 * * *");
+    }
+
+    #[test]
+    fn drive_folder_id_accepts_raw_id_url_or_empty() {
+        assert_eq!(extract_drive_folder_id("  1AbC_xyz  ").as_deref(), Some("1AbC_xyz"));
+        assert_eq!(
+            extract_drive_folder_id("https://drive.google.com/drive/folders/1AbC_xyz?usp=sharing").as_deref(),
+            Some("1AbC_xyz")
+        );
+        assert_eq!(
+            extract_drive_folder_id("https://drive.google.com/drive/u/0/folders/1AbC_xyz").as_deref(),
+            Some("1AbC_xyz")
+        );
+        assert_eq!(extract_drive_folder_id("   "), None);
     }
 }
