@@ -43,6 +43,12 @@ provider = "local"
 # Google Drive. The local copy is always written first; if the Drive upload
 # fails, the job is reported as failed (Telegram alert) but the local copy stays.
 #
+# Retention: each task's retention_days also applies to Drive. After a backup
+# reaches Drive, that database's older "<db>_YYYYMMDD_HHMMSS.zip" files in the
+# target folder are PERMANENTLY deleted (not trashed, so the quota is freed).
+# Other files in the folder are never touched. If the upload fails, no Drive
+# file is deleted.
+#
 # One-time setup (OAuth "Web application" credentials + refresh token):
 #   1. https://console.cloud.google.com -> create a project -> enable "Google Drive API".
 #   2. "OAuth consent screen": External, add your Google account as a test user,

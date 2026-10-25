@@ -14,12 +14,14 @@ use std::time::Duration;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+use crate::application::retention::parse_backup_timestamp;
 use crate::domain::config::GoogleDriveConfig;
 use crate::domain::error::BackupError;
 use crate::ports::storage::Storage;
 
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const UPLOAD_URL: &str = "https://www.googleapis.com/upload/drive/v3/files";
+const FILES_URL: &str = "https://www.googleapis.com/drive/v3/files";
 
 /// 8 MiB. Drive requires every non-final chunk to be a multiple of 256 KiB.
 const DEFAULT_CHUNK_SIZE: usize = 32 * 256 * 1024;
@@ -38,6 +40,7 @@ pub struct GoogleDriveStorage {
     folder_id: Option<String>,
     token_url: String,
     upload_url: String,
+    files_url: String,
     chunk_size: usize,
     retry_delay: Duration,
     http: reqwest::Client,
@@ -82,6 +85,20 @@ struct DriveFile {
     id: String,
 }
 
+#[derive(Deserialize)]
+struct NamedDriveFile {
+    id: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileList {
+    #[serde(default)]
+    files: Vec<NamedDriveFile>,
+    next_page_token: Option<String>,
+}
+
 impl GoogleDriveStorage {
     /// Create a new `GoogleDriveStorage` from the `[storage.google_drive]` settings.
     pub fn new(config: &GoogleDriveConfig) -> Self {
@@ -99,6 +116,7 @@ impl GoogleDriveStorage {
                 .map(str::to_string),
             token_url: TOKEN_URL.to_string(),
             upload_url: UPLOAD_URL.to_string(),
+            files_url: FILES_URL.to_string(),
             chunk_size: DEFAULT_CHUNK_SIZE,
             retry_delay: Duration::from_secs(2),
             http,
@@ -200,6 +218,121 @@ impl GoogleDriveStorage {
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
             .ok_or_else(|| Failure::transient("Google Drive did not return an upload session URI".into()))
+    }
+
+    /// Permanently delete this database's backups older than `retention_days`
+    /// from the configured folder (Drive root when no folder is set).
+    ///
+    /// Uses the same `<database>_YYYYMMDD_HHMMSS.zip` matching as the local
+    /// retention, so manually uploaded or other databases' files are never touched.
+    /// Files are deleted (not trashed) because trashed files still use quota.
+    /// Returns the number of deleted files. `retention_days = 0` disables cleanup.
+    pub async fn clean_old_backups(
+        &self,
+        database_name: &str,
+        retention_days: u32,
+    ) -> Result<u32, BackupError> {
+        if retention_days == 0 {
+            return Ok(0);
+        }
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
+        let access_token = self.with_retries("token request", || self.access_token()).await?;
+
+        let parent = self.folder_id.as_deref().unwrap_or("root");
+        let query = format!(
+            "'{}' in parents and name contains '{}' and trashed = false",
+            drive_query_literal(parent),
+            drive_query_literal(&format!("{}_", database_name)),
+        );
+
+        // Collect first, delete after: deleting while paging can shift pages.
+        let mut expired = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let page = self
+                .with_retries("file listing", || self.list_page(&access_token, &query, page_token.as_deref()))
+                .await?;
+            for file in page.files {
+                if let Some(timestamp) = parse_backup_timestamp(&file.name, database_name) {
+                    if timestamp < cutoff && file.name.ends_with(".zip") {
+                        expired.push(file);
+                    }
+                }
+            }
+            match page.next_page_token {
+                Some(token) if !token.is_empty() => page_token = Some(token),
+                _ => break,
+            }
+        }
+
+        let mut deleted = 0;
+        for file in &expired {
+            tracing::info!(file = %file.name, "Deleting expired Google Drive backup");
+            self.with_retries("file deletion", || self.delete_file(&access_token, &file.id))
+                .await?;
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
+
+    async fn list_page(
+        &self,
+        access_token: &str,
+        query: &str,
+        page_token: Option<&str>,
+    ) -> Result<FileList, Failure> {
+        let mut params = vec![
+            ("q", query),
+            ("fields", "nextPageToken,files(id,name)"),
+            ("pageSize", "1000"),
+            ("supportsAllDrives", "true"),
+            ("includeItemsFromAllDrives", "true"),
+        ];
+        if let Some(token) = page_token {
+            params.push(("pageToken", token));
+        }
+
+        let response = self
+            .http
+            .get(&self.files_url)
+            .bearer_auth(access_token)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|e| Failure::transient(format!("Failed to list Google Drive files: {}", e.without_url())))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(Failure::from_status(
+                status,
+                format!("Google Drive file listing rejected ({}): {}", status, body),
+            ));
+        }
+        response.json().await.map_err(|e| {
+            Failure::transient(format!("Invalid Google Drive file listing: {}", e.without_url()))
+        })
+    }
+
+    async fn delete_file(&self, access_token: &str, file_id: &str) -> Result<(), Failure> {
+        let response = self
+            .http
+            .delete(format!("{}/{}?supportsAllDrives=true", self.files_url, file_id))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| Failure::transient(format!("Failed to delete Google Drive file: {}", e.without_url())))?;
+
+        let status = response.status();
+        // 404: already gone (e.g. deleted by hand) — nothing left to do.
+        if status.is_success() || status.as_u16() == 404 {
+            return Ok(());
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(Failure::from_status(
+            status,
+            format!("Google Drive file deletion rejected ({}): {}", status, body),
+        ))
     }
 
     /// Send one chunk (or an empty status query when `body` is empty).
@@ -346,6 +479,11 @@ fn build_http_client(request_timeout: Duration) -> reqwest::Client {
         .unwrap_or_default()
 }
 
+/// Escape a value for a single-quoted string literal in a Drive `q` query.
+fn drive_query_literal(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
 fn drive_file_url(file_id: &str) -> String {
     format!("https://drive.google.com/file/d/{}/view", file_id)
 }
@@ -419,6 +557,11 @@ mod tests {
         /// Answer every token request with 400 invalid_grant (revoked credentials).
         reject_token: bool,
         token_requests: usize,
+        /// Files returned by the list endpoint as (id, name), split in two pages.
+        listed_files: Vec<(String, String)>,
+        /// `q` parameter of every list request (lowercased).
+        list_queries: Vec<String>,
+        deleted_ids: Vec<String>,
     }
 
     async fn spawn_fake_drive(state: Arc<Mutex<FakeDrive>>) -> String {
@@ -503,6 +646,28 @@ mod tests {
             s.metadata = String::from_utf8_lossy(&body).to_string();
             return Some(reply("200 OK", &format!("Location: {}\r\n", session_uri), ""));
         }
+        if head.starts_with("get /files?") {
+            assert_eq!(header(head, "authorization").as_deref(), Some("bearer tok"));
+            let request_line = head.lines().next().unwrap();
+            s.list_queries.push(request_line.to_string());
+            // First page: first file + a page token; second page: the rest.
+            let (page, next): (Vec<_>, &str) = if request_line.contains("pagetoken=page2") {
+                (s.listed_files.iter().skip(1).cloned().collect(), "")
+            } else {
+                (s.listed_files.iter().take(1).cloned().collect(), r#""nextPageToken":"page2","#)
+            };
+            let files: Vec<String> = page
+                .iter()
+                .map(|(id, name)| format!(r#"{{"id":"{}","name":"{}"}}"#, id, name))
+                .collect();
+            let body = format!(r#"{{{}"files":[{}]}}"#, next, files.join(","));
+            return Some(reply("200 OK", "Content-Type: application/json\r\n", &body));
+        }
+        if let Some(rest) = head.strip_prefix("delete /files/") {
+            let id = rest.split(|c| c == '?' || c == ' ').next().unwrap().to_string();
+            s.deleted_ids.push(id);
+            return Some(reply("204 No Content", "", ""));
+        }
         // PUT /session
         if s.hang {
             return None;
@@ -533,11 +698,8 @@ mod tests {
         })
     }
 
-    async fn run_upload(state: Arc<Mutex<FakeDrive>>, content: &[u8]) -> Result<String, BackupError> {
+    async fn fake_storage(state: Arc<Mutex<FakeDrive>>) -> GoogleDriveStorage {
         let base = spawn_fake_drive(state).await;
-        let source = std::env::temp_dir().join(format!("gdrive_test_{}.zip", uuid::Uuid::new_v4()));
-        tokio::fs::write(&source, content).await.unwrap();
-
         let mut storage = GoogleDriveStorage::new(&GoogleDriveConfig {
             enabled: true,
             client_id: "cid".into(),
@@ -547,9 +709,17 @@ mod tests {
         });
         storage.token_url = format!("{}/token", base);
         storage.upload_url = format!("{}/upload", base);
+        storage.files_url = format!("{}/files", base);
         storage.chunk_size = 4;
         storage.retry_delay = Duration::ZERO;
         storage.http = build_http_client(Duration::from_millis(300));
+        storage
+    }
+
+    async fn run_upload(state: Arc<Mutex<FakeDrive>>, content: &[u8]) -> Result<String, BackupError> {
+        let storage = fake_storage(state).await;
+        let source = std::env::temp_dir().join(format!("gdrive_test_{}.zip", uuid::Uuid::new_v4()));
+        tokio::fs::write(&source, content).await.unwrap();
 
         // Guard so a regression fails the test instead of hanging the suite.
         let result = tokio::time::timeout(
@@ -639,5 +809,46 @@ mod tests {
 
         assert!(err.contains("invalid_grant"), "{err}");
         assert_eq!(state.lock().unwrap().token_requests, 1, "4xx is permanent: no retry");
+    }
+
+    #[test]
+    fn drive_query_literal_escapes_quotes_and_backslashes() {
+        assert_eq!(drive_query_literal(r"O'Brien\DB"), r"O\'Brien\\DB");
+    }
+
+    #[tokio::test]
+    async fn retention_deletes_only_expired_backups_of_this_database() {
+        let recent = format!("ProdDB_{}.zip", chrono::Utc::now().format("%Y%m%d_%H%M%S"));
+        let state = Arc::new(Mutex::new(FakeDrive {
+            listed_files: vec![
+                ("old1".into(), "ProdDB_20200101_000000.zip".into()),
+                ("new1".into(), recent),
+                ("other".into(), "ProdDBArchive_20200101_000000.zip".into()),
+                ("manual".into(), "ProdDB_notes.zip".into()),
+                ("old2".into(), "ProdDB_20200615_120000.zip".into()),
+            ],
+            ..Default::default()
+        }));
+        let storage = fake_storage(state.clone()).await;
+
+        let deleted = storage.clean_old_backups("ProdDB", 7).await.unwrap();
+
+        assert_eq!(deleted, 2);
+        let s = state.lock().unwrap();
+        assert_eq!(s.deleted_ids, vec!["old1", "old2"], "both pages scanned, only expired ProdDB files");
+        assert_eq!(s.list_queries.len(), 2, "follows nextPageToken");
+        assert!(s.list_queries[0].contains("folderxyz"), "scoped to the configured folder: {}", s.list_queries[0]);
+        assert!(s.list_queries[0].contains("trashed"), "excludes trashed files: {}", s.list_queries[0]);
+    }
+
+    #[tokio::test]
+    async fn retention_zero_days_makes_no_requests() {
+        let state = Arc::new(Mutex::new(FakeDrive::default()));
+        let storage = fake_storage(state.clone()).await;
+
+        assert_eq!(storage.clean_old_backups("ProdDB", 0).await.unwrap(), 0);
+        let s = state.lock().unwrap();
+        assert_eq!(s.token_requests, 0);
+        assert!(s.list_queries.is_empty());
     }
 }
