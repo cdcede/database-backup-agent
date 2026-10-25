@@ -51,6 +51,27 @@ enum UploadProgress {
     Done(String),
 }
 
+/// A failed request before the upload starts, tagged with whether retrying can help.
+struct Failure {
+    error: BackupError,
+    retryable: bool,
+}
+
+impl Failure {
+    /// Network errors and unreadable responses: worth another attempt.
+    fn transient(message: String) -> Self {
+        Self { error: upload_error(message), retryable: true }
+    }
+
+    /// Only 5xx and 429 are retried; other 4xx (e.g. revoked credentials) are permanent.
+    fn from_status(status: reqwest::StatusCode, message: String) -> Self {
+        Self {
+            error: upload_error(message),
+            retryable: status.is_server_error() || status.as_u16() == 429,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
@@ -85,7 +106,7 @@ impl GoogleDriveStorage {
     }
 
     /// Exchange the long-lived refresh token for a short-lived access token.
-    async fn access_token(&self) -> Result<String, BackupError> {
+    async fn access_token(&self) -> Result<String, Failure> {
         let response = self
             .http
             .post(&self.token_url)
@@ -97,22 +118,43 @@ impl GoogleDriveStorage {
             ])
             .send()
             .await
-            .map_err(|e| upload_error(format!("Google OAuth token request failed: {}", e)))?;
+            .map_err(|e| {
+                Failure::transient(format!("Google OAuth token request failed: {}", e.without_url()))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(upload_error(format!(
-                "Google OAuth token request rejected ({}): {}",
-                status, body
-            )));
+            return Err(Failure::from_status(
+                status,
+                format!("Google OAuth token request rejected ({}): {}", status, body),
+            ));
         }
 
-        let token: TokenResponse = response
-            .json()
-            .await
-            .map_err(|e| upload_error(format!("Invalid Google OAuth token response: {}", e)))?;
+        let token: TokenResponse = response.json().await.map_err(|e| {
+            Failure::transient(format!("Invalid Google OAuth token response: {}", e.without_url()))
+        })?;
         Ok(token.access_token)
+    }
+
+    /// Run a pre-upload request, retrying only transient failures with backoff.
+    async fn with_retries<T, F, Fut>(&self, what: &str, mut request: F) -> Result<T, BackupError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, Failure>>,
+    {
+        let mut attempt: u32 = 1;
+        loop {
+            match request().await {
+                Ok(value) => return Ok(value),
+                Err(failure) if failure.retryable && attempt < MAX_ATTEMPTS => {
+                    tracing::warn!(error = %failure.error, attempt, "Retrying Google Drive {}", what);
+                    tokio::time::sleep(self.retry_delay * attempt).await;
+                    attempt += 1;
+                }
+                Err(failure) => return Err(failure.error),
+            }
+        }
     }
 
     /// Open a resumable upload session and return its session URI.
@@ -121,7 +163,7 @@ impl GoogleDriveStorage {
         access_token: &str,
         filename: &str,
         total: u64,
-    ) -> Result<String, BackupError> {
+    ) -> Result<String, Failure> {
         let mut metadata = serde_json::json!({ "name": filename });
         if let Some(folder) = &self.folder_id {
             metadata["parents"] = serde_json::json!([folder]);
@@ -139,15 +181,17 @@ impl GoogleDriveStorage {
             .json(&metadata)
             .send()
             .await
-            .map_err(|e| upload_error(format!("Failed to start Google Drive upload: {}", e)))?;
+            .map_err(|e| {
+                Failure::transient(format!("Failed to start Google Drive upload: {}", e.without_url()))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(upload_error(format!(
-                "Google Drive rejected the upload session ({}): {}",
-                status, body
-            )));
+            return Err(Failure::from_status(
+                status,
+                format!("Google Drive rejected the upload session ({}): {}", status, body),
+            ));
         }
 
         response
@@ -155,7 +199,7 @@ impl GoogleDriveStorage {
             .get(reqwest::header::LOCATION)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
-            .ok_or_else(|| upload_error("Google Drive did not return an upload session URI".into()))
+            .ok_or_else(|| Failure::transient("Google Drive did not return an upload session URI".into()))
     }
 
     /// Send one chunk (or an empty status query when `body` is empty).
@@ -172,7 +216,8 @@ impl GoogleDriveStorage {
             .body(body)
             .send()
             .await
-            .map_err(|e| upload_error(format!("Google Drive chunk upload failed: {}", e)))?;
+            // `without_url`: the session URI itself grants upload access, keep it out of logs.
+            .map_err(|e| upload_error(format!("Google Drive chunk upload failed: {}", e.without_url())))?;
 
         let status = response.status();
         if status.as_u16() == 308 {
@@ -189,7 +234,9 @@ impl GoogleDriveStorage {
             let file: DriveFile = response
                 .json()
                 .await
-                .map_err(|e| upload_error(format!("Invalid Google Drive upload response: {}", e)))?;
+                .map_err(|e| {
+                    upload_error(format!("Invalid Google Drive upload response: {}", e.without_url()))
+                })?;
             return Ok(UploadProgress::Done(file.id));
         }
 
@@ -216,8 +263,10 @@ impl Storage for GoogleDriveStorage {
             .map_err(|e| upload_error(format!("Failed to read '{}' size: {}", source.display(), e)))?
             .len();
 
-        let access_token = self.access_token().await?;
-        let session_uri = self.start_session(&access_token, filename, total).await?;
+        let access_token = self.with_retries("token request", || self.access_token()).await?;
+        let session_uri = self
+            .with_retries("upload session", || self.start_session(&access_token, filename, total))
+            .await?;
 
         tracing::info!(filename = filename, size_bytes = total, "Uploading file to Google Drive");
 
@@ -363,6 +412,13 @@ mod tests {
         stall: bool,
         /// Never answer chunk requests (simulates a hung connection).
         hang: bool,
+        /// Answer the first token request with a 503.
+        fail_token_once: bool,
+        /// Answer the first session request with a 503.
+        fail_session_once: bool,
+        /// Answer every token request with 400 invalid_grant (revoked credentials).
+        reject_token: bool,
+        token_requests: usize,
     }
 
     async fn spawn_fake_drive(state: Arc<Mutex<FakeDrive>>) -> String {
@@ -428,7 +484,19 @@ mod tests {
     fn handle(head: &str, body: Vec<u8>, state: &Mutex<FakeDrive>, session_uri: &str) -> Option<String> {
         let mut s = state.lock().unwrap();
         if head.starts_with("post /token") {
+            s.token_requests += 1;
+            if s.reject_token {
+                return Some(reply("400 Bad Request", "", r#"{"error":"invalid_grant"}"#));
+            }
+            if s.fail_token_once {
+                s.fail_token_once = false;
+                return Some(reply("503 Service Unavailable", "", "busy"));
+            }
             return Some(reply("200 OK", "Content-Type: application/json\r\n", r#"{"access_token":"tok"}"#));
+        }
+        if head.starts_with("post /upload?uploadtype=resumable") && s.fail_session_once {
+            s.fail_session_once = false;
+            return Some(reply("503 Service Unavailable", "", "busy"));
         }
         if head.starts_with("post /upload?uploadtype=resumable") {
             assert_eq!(header(head, "authorization").as_deref(), Some("bearer tok"));
@@ -542,5 +610,34 @@ mod tests {
         let err = run_upload(state, b"0123456789").await.unwrap_err().to_string();
 
         assert!(err.contains("chunk upload failed"), "{err}");
+        // The resumable session URI grants upload access: it must not reach logs or Telegram.
+        assert!(!err.contains("/session"), "error leaks the session URI: {err}");
+    }
+
+    #[tokio::test]
+    async fn retries_transient_failures_before_the_upload_starts() {
+        let state = Arc::new(Mutex::new(FakeDrive {
+            fail_token_once: true,
+            fail_session_once: true,
+            ..Default::default()
+        }));
+        let result = run_upload(state.clone(), b"0123456789").await;
+
+        assert!(result.is_ok(), "{result:?}");
+        let s = state.lock().unwrap();
+        assert_eq!(s.received, b"0123456789");
+        assert_eq!(s.token_requests, 2, "token request retried once");
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_rejected_credentials() {
+        let state = Arc::new(Mutex::new(FakeDrive {
+            reject_token: true,
+            ..Default::default()
+        }));
+        let err = run_upload(state.clone(), b"0123456789").await.unwrap_err().to_string();
+
+        assert!(err.contains("invalid_grant"), "{err}");
+        assert_eq!(state.lock().unwrap().token_requests, 1, "4xx is permanent: no retry");
     }
 }
