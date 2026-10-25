@@ -27,6 +27,9 @@ const DEFAULT_CHUNK_SIZE: usize = 32 * 256 * 1024;
 /// Consecutive failed attempts (without upload progress) before giving up.
 const MAX_ATTEMPTS: u32 = 3;
 
+/// Upper bound for any single HTTP request (an 8 MiB chunk needs ~4.5 min at 256 kbit/s).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 /// Google Drive storage adapter (OAuth2 refresh-token credentials).
 pub struct GoogleDriveStorage {
     client_id: String,
@@ -61,13 +64,7 @@ struct DriveFile {
 impl GoogleDriveStorage {
     /// Create a new `GoogleDriveStorage` from the `[storage.google_drive]` settings.
     pub fn new(config: &GoogleDriveConfig) -> Self {
-        let http = reqwest::Client::builder()
-            // Drive answers intermediate chunks with "308 Resume Incomplete",
-            // which must NOT be treated as an HTTP redirect.
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
+        let http = build_http_client(REQUEST_TIMEOUT);
 
         Self {
             client_id: config.client_id.trim().to_string(),
@@ -248,38 +245,60 @@ impl Storage for GoogleDriveStorage {
                     tracing::warn!(error = %e, attempt = failures, "Retrying Google Drive chunk");
                     tokio::time::sleep(self.retry_delay * failures).await;
                     // Ask Google how many bytes it really kept before resending.
-                    self.put_chunk(&session_uri, Vec::new(), format!("bytes */{}", total))
+                    match self
+                        .put_chunk(&session_uri, Vec::new(), format!("bytes */{}", total))
                         .await
-                        .unwrap_or(UploadProgress::Incomplete(offset))
+                    {
+                        Ok(UploadProgress::Done(file_id)) => return Ok(drive_file_url(&file_id)),
+                        Ok(UploadProgress::Incomplete(next)) => offset = next.min(total),
+                        Err(_) => {} // Resend from the current offset.
+                    }
+                    // Already counted as a failure above; do not count it twice.
+                    continue;
                 }
             };
 
             match progress {
                 UploadProgress::Done(file_id) => {
                     tracing::info!(file_id = %file_id, "Google Drive upload completed");
-                    return Ok(format!("https://drive.google.com/file/d/{}/view", file_id));
+                    return Ok(drive_file_url(&file_id));
                 }
                 UploadProgress::Incomplete(next) if next > offset => {
                     failures = 0;
                     offset = next.min(total);
                 }
                 UploadProgress::Incomplete(next) => {
-                    // No progress (or the server rolled back): count it as a failure
-                    // so a misbehaving server cannot loop us forever.
-                    if failures == 0 {
-                        failures += 1;
-                    }
+                    // Every answer without progress counts as a failure, so a
+                    // misbehaving server cannot keep us looping forever.
+                    failures += 1;
                     if failures >= MAX_ATTEMPTS {
                         return Err(upload_error(format!(
                             "Google Drive upload stalled at byte {} of {}",
                             next, total
                         )));
                     }
+                    tokio::time::sleep(self.retry_delay * failures).await;
                     offset = next.min(total);
                 }
             }
         }
     }
+}
+
+fn build_http_client(request_timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        // Drive answers intermediate chunks with "308 Resume Incomplete",
+        // which must NOT be treated as an HTTP redirect.
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(30))
+        // A hung connection becomes a retryable error instead of blocking the job forever.
+        .timeout(request_timeout)
+        .build()
+        .unwrap_or_default()
+}
+
+fn drive_file_url(file_id: &str) -> String {
+    format!("https://drive.google.com/file/d/{}/view", file_id)
 }
 
 /// Build the `Content-Range` header for a chunk.
@@ -340,6 +359,10 @@ mod tests {
         chunk_puts: usize,
         /// Reject the chunk starting at this offset once with a 503.
         fail_once_at: Option<u64>,
+        /// Answer every chunk with "308" without keeping any bytes.
+        stall: bool,
+        /// Never answer chunk requests (simulates a hung connection).
+        hang: bool,
     }
 
     async fn spawn_fake_drive(state: Arc<Mutex<FakeDrive>>) -> String {
@@ -354,8 +377,13 @@ mod tests {
                 let session_uri = session_uri.clone();
                 tokio::spawn(async move {
                     let (head, body) = read_request(&mut socket).await;
-                    let response = handle(&head, body, &state, &session_uri);
-                    let _ = socket.write_all(response.as_bytes()).await;
+                    match handle(&head, body, &state, &session_uri) {
+                        Some(response) => {
+                            let _ = socket.write_all(response.as_bytes()).await;
+                        }
+                        // Keep the socket open without answering.
+                        None => tokio::time::sleep(Duration::from_secs(3600)).await,
+                    }
                 });
             }
         });
@@ -397,17 +425,24 @@ mod tests {
         )
     }
 
-    fn handle(head: &str, body: Vec<u8>, state: &Mutex<FakeDrive>, session_uri: &str) -> String {
+    fn handle(head: &str, body: Vec<u8>, state: &Mutex<FakeDrive>, session_uri: &str) -> Option<String> {
         let mut s = state.lock().unwrap();
         if head.starts_with("post /token") {
-            return reply("200 OK", "Content-Type: application/json\r\n", r#"{"access_token":"tok"}"#);
+            return Some(reply("200 OK", "Content-Type: application/json\r\n", r#"{"access_token":"tok"}"#));
         }
         if head.starts_with("post /upload?uploadtype=resumable") {
             assert_eq!(header(head, "authorization").as_deref(), Some("bearer tok"));
             s.metadata = String::from_utf8_lossy(&body).to_string();
-            return reply("200 OK", &format!("Location: {}\r\n", session_uri), "");
+            return Some(reply("200 OK", &format!("Location: {}\r\n", session_uri), ""));
         }
         // PUT /session
+        if s.hang {
+            return None;
+        }
+        if s.stall {
+            s.chunk_puts += 1;
+            return Some(reply("308 Resume Incomplete", "", ""));
+        }
         let range = header(head, "content-range").unwrap();
         let (span, total) = range.strip_prefix("bytes ").unwrap().split_once('/').unwrap();
         let total: u64 = total.parse().unwrap();
@@ -416,18 +451,18 @@ mod tests {
             let start: u64 = span.split_once('-').unwrap().0.parse().unwrap();
             if s.fail_once_at == Some(start) {
                 s.fail_once_at = None;
-                return reply("503 Service Unavailable", "", "busy");
+                return Some(reply("503 Service Unavailable", "", "busy"));
             }
             assert_eq!(start, s.received.len() as u64, "chunk must continue at the acked offset");
             s.received.extend_from_slice(&body);
         }
-        if s.received.len() as u64 == total {
+        Some(if s.received.len() as u64 == total {
             reply("200 OK", "Content-Type: application/json\r\n", r#"{"id":"file123"}"#)
         } else if s.received.is_empty() {
             reply("308 Resume Incomplete", "", "")
         } else {
             reply("308 Resume Incomplete", &format!("Range: bytes=0-{}\r\n", s.received.len() - 1), "")
-        }
+        })
     }
 
     async fn run_upload(state: Arc<Mutex<FakeDrive>>, content: &[u8]) -> Result<String, BackupError> {
@@ -446,8 +481,15 @@ mod tests {
         storage.upload_url = format!("{}/upload", base);
         storage.chunk_size = 4;
         storage.retry_delay = Duration::ZERO;
+        storage.http = build_http_client(Duration::from_millis(300));
 
-        let result = storage.upload(&source, "ProdDB_20261025.zip").await;
+        // Guard so a regression fails the test instead of hanging the suite.
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            storage.upload(&source, "ProdDB_20261025.zip"),
+        )
+        .await
+        .expect("upload must terminate");
         let _ = tokio::fs::remove_file(&source).await;
         result
     }
@@ -477,5 +519,28 @@ mod tests {
         let s = state.lock().unwrap();
         assert_eq!(s.received, b"0123456789");
         assert_eq!(s.chunk_puts, 4, "the rejected chunk is sent again");
+    }
+
+    #[tokio::test]
+    async fn gives_up_when_server_never_makes_progress() {
+        let state = Arc::new(Mutex::new(FakeDrive {
+            stall: true,
+            ..Default::default()
+        }));
+        let err = run_upload(state.clone(), b"0123456789").await.unwrap_err().to_string();
+
+        assert!(err.contains("stalled"), "{err}");
+        assert_eq!(state.lock().unwrap().chunk_puts as u32, MAX_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn gives_up_when_server_stops_answering() {
+        let state = Arc::new(Mutex::new(FakeDrive {
+            hang: true,
+            ..Default::default()
+        }));
+        let err = run_upload(state, b"0123456789").await.unwrap_err().to_string();
+
+        assert!(err.contains("chunk upload failed"), "{err}");
     }
 }
