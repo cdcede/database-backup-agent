@@ -100,6 +100,19 @@ impl TelegramNotifier {
 
         Ok(())
     }
+
+    /// Notify a non-fatal problem after a backup that itself succeeded
+    /// (e.g. cloud retention cleanup failed).
+    pub async fn send_warning(&self, database: &str, reason: &str) -> Result<(), BackupError> {
+        let message = format!(
+            "🟡 <b>Backup Warning</b>\n\n\
+             <b>Database:</b> <code>{}</code>\n\
+             <b>Issue:</b>\n<code>{}</code>",
+            database, reason
+        );
+
+        self.send_message(&message).await
+    }
 }
 
 impl Notifier for TelegramNotifier {
@@ -229,6 +242,28 @@ mod tests {
         assert!(request_content.contains("\"chat_id\":\"123456789\""));
         assert!(request_content.contains("AdventureWorks"));
         assert!(request_content.contains("Database connection lost during backup"));
+    }
+
+    #[tokio::test]
+    async fn send_warning_is_not_labelled_as_a_failed_backup() {
+        let (mock_url, server_handle) = run_mock_server(200, r#"{"ok":true}"#).await;
+
+        let notifier = TelegramNotifier::new_with_base_url(
+            "mock-token".to_string(),
+            "123456789".to_string(),
+            mock_url,
+        );
+
+        notifier
+            .send_warning("AdventureWorks", "Google Drive retention cleanup failed")
+            .await
+            .unwrap();
+
+        let request_content = server_handle.await.unwrap();
+        assert!(request_content.contains("Backup Warning"), "{request_content}");
+        assert!(!request_content.contains("Backup Failed"), "{request_content}");
+        assert!(request_content.contains("AdventureWorks"));
+        assert!(request_content.contains("Google Drive retention cleanup failed"));
     }
 
     #[tokio::test]

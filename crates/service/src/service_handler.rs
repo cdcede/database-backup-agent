@@ -365,8 +365,10 @@ async fn execute_single_backup(db_name: &str, state: Arc<DaemonState>, retention
                 let reason = format!("Google Drive retention cleanup failed: {}", e);
                 tracing::error!(database = db_name, "{}", reason);
                 // Alert: if cleanup keeps failing, Drive fills up silently until uploads break.
-                // The backup itself succeeded, so the job result stays unchanged.
-                let _ = build_notifier(&config).send_failure(db_name, &reason).await;
+                // The backup itself succeeded, so this is a warning and the job result stays unchanged.
+                if let AppNotifier::Telegram(telegram) = build_notifier(&config) {
+                    let _ = telegram.send_warning(db_name, &reason).await;
+                }
             }
         }
     }
