@@ -127,6 +127,30 @@ pub struct StorageConfig {
     pub provider: StorageProviderType,
     #[serde(default)]
     pub s3: Option<S3Config>,
+    /// Optional cloud mirror. When enabled, every backup stored by `provider`
+    /// is ALSO uploaded to Google Drive.
+    #[serde(default)]
+    pub google_drive: GoogleDriveConfig,
+}
+
+/// Google Drive mirror settings (OAuth2 "installed app" credentials).
+///
+/// Uses a long-lived refresh token instead of a service account because
+/// service accounts have no storage quota on personal (Gmail) Drives.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GoogleDriveConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+    #[serde(default)]
+    pub refresh_token: String,
+    /// Target folder ID (the last segment of the folder URL). `None` = Drive root.
+    /// No `skip_serializing_if`: the IPC channel uses bincode, which needs every field.
+    #[serde(default)]
+    pub folder_id: Option<String>,
 }
 
 /// Supported storage backends.
@@ -230,6 +254,7 @@ impl Default for StorageConfig {
         Self {
             provider: StorageProviderType::Local,
             s3: None,
+            google_drive: GoogleDriveConfig::default(),
         }
     }
 }
@@ -358,6 +383,19 @@ impl AppConfig {
                         errors.push("S3 secret_key is empty".into());
                     }
                 }
+            }
+        }
+
+        let gdrive = &self.storage.google_drive;
+        if gdrive.enabled {
+            if gdrive.client_id.trim().is_empty() {
+                errors.push("Google Drive is enabled but Google Drive client_id is empty".into());
+            }
+            if gdrive.client_secret.trim().is_empty() {
+                errors.push("Google Drive is enabled but Google Drive client_secret is empty".into());
+            }
+            if gdrive.refresh_token.trim().is_empty() {
+                errors.push("Google Drive is enabled but Google Drive refresh_token is empty".into());
             }
         }
     }
@@ -509,6 +547,69 @@ mod tests {
         assert!(!is_valid_schedule("12:60")); // Minute too high
         assert!(!is_valid_schedule("12")); // No colon
         assert!(!is_valid_schedule("")); // Empty
+    }
+
+    #[test]
+    fn google_drive_disabled_by_default() {
+        let config = AppConfig::default();
+        assert!(!config.storage.google_drive.enabled);
+    }
+
+    #[test]
+    fn google_drive_enabled_without_credentials_fails() {
+        let mut config = valid_config();
+        config.storage.google_drive.enabled = true;
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("Google Drive client_id")), "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("Google Drive client_secret")), "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("Google Drive refresh_token")), "{errors:?}");
+    }
+
+    #[test]
+    fn google_drive_enabled_with_credentials_passes() {
+        let mut config = valid_config();
+        config.storage.google_drive = GoogleDriveConfig {
+            enabled: true,
+            client_id: "id".into(),
+            client_secret: "secret".into(),
+            refresh_token: "token".into(),
+            folder_id: None,
+        };
+        assert!(config.validate().is_empty());
+    }
+
+    #[test]
+    fn toml_with_google_drive_section_parses() {
+        let toml = r#"
+            [sql_server]
+            host = "localhost"
+            port = 1433
+            auth_method = "sql"
+            username = "sa"
+            password = "secret"
+
+            [backup]
+            local_path = "/tmp/test"
+
+            [storage]
+            provider = "local"
+
+            [storage.google_drive]
+            enabled = true
+            client_id = "cid"
+            client_secret = "csecret"
+            refresh_token = "rtoken"
+            folder_id = "folder123"
+        "#;
+        let cfg: AppConfig = toml::from_str(toml).expect("Should parse [storage.google_drive]");
+        assert!(cfg.storage.google_drive.enabled);
+        assert_eq!(cfg.storage.google_drive.refresh_token, "rtoken");
+        assert_eq!(cfg.storage.google_drive.folder_id.as_deref(), Some("folder123"));
+
+        // Round-trip through the serializer the GUI uses to save config.toml.
+        let saved = toml::to_string_pretty(&cfg).expect("Should serialize");
+        let reloaded: AppConfig = toml::from_str(&saved).expect("Should reload");
+        assert_eq!(reloaded, cfg);
     }
 
     // -------------------------------------------------------------------------
