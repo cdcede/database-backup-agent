@@ -63,7 +63,11 @@ pub fn show(
             draw_card(ui, "⏳ Backup Schedule", &main_text, &sub_text);
 
             // Storage card
-            let provider_type = format!("{:?}", config.storage.provider);
+            let provider_type = if config.storage.google_drive.enabled {
+                format!("{:?} + Google Drive", config.storage.provider)
+            } else {
+                format!("{:?}", config.storage.provider)
+            };
             let sub_text = if config.storage.provider == backup_agent_core::domain::config::StorageProviderType::S3 {
                 config.storage.s3.as_ref().map(|s3| s3.bucket.clone()).unwrap_or_else(|| "No Bucket".to_string())
             } else {
