@@ -80,7 +80,10 @@ if the working tree has local changes.
   `config.toml` (see `config.example.toml` for the OAuth refresh-token setup).
 - Local copy is written first; a Drive failure marks the job failed (Telegram
   alert) but keeps the local copy.
-- Retention (`retention_days`) only cleans local files; Drive copies accumulate.
+- Retention (`retention_days`) also cleans Drive: after a successful upload, that
+  database's expired `<db>_YYYYMMDD_HHMMSS.zip` files in the target folder are
+  permanently deleted (`GoogleDriveStorage::clean_old_backups`). Failed uploads
+  never trigger Drive deletions.
 - To verify after upgrading: trigger a manual backup and check the service log
   (`backup-agent.log` next to the service exe) for
   `Google Drive upload completed`. Never print OAuth secrets or tokens.

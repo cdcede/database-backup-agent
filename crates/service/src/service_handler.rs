@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 use backup_agent_core::domain::config::{AppConfig, StorageProviderType};
 use backup_agent_core::domain::error::BackupError;
 use backup_agent_core::domain::backup_job::BackupJob;
-use backup_agent_core::domain::backup_result::BackupResult;
+use backup_agent_core::domain::backup_result::{BackupResult, BackupStatus};
 use backup_agent_core::infrastructure::telegram::TelegramNotifier;
 use backup_agent_core::infrastructure::mssql::MssqlBackup;
 use backup_agent_core::infrastructure::compression::ZipCompressor;
@@ -356,6 +356,24 @@ async fn execute_single_backup(db_name: &str, state: Arc<DaemonState>, retention
     if config.storage.provider == StorageProviderType::Local {
         if let Err(e) = clean_old_backups(&config.backup.local_path, db_name, retention_days).await {
             tracing::error!("Failed to run retention cleanup for database '{}': {}", db_name, e);
+        }
+    }
+
+    // 6. Google Drive retention — only after THIS backup reached Drive, so a run of
+    //    failed uploads never removes the last good cloud copies.
+    if config.storage.google_drive.enabled && result.status == BackupStatus::Completed {
+        let gdrive = GoogleDriveStorage::new(&config.storage.google_drive);
+        match gdrive.clean_old_backups(db_name, retention_days).await {
+            Ok(deleted) => tracing::info!(
+                database = db_name,
+                deleted_count = deleted,
+                "Google Drive retention cleanup completed"
+            ),
+            Err(e) => tracing::error!(
+                "Failed to run Google Drive retention cleanup for database '{}': {}",
+                db_name,
+                e
+            ),
         }
     }
 
