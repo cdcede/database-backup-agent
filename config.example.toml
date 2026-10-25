@@ -43,12 +43,14 @@ provider = "local"
 # Google Drive. The local copy is always written first; if the Drive upload
 # fails, the job is reported as failed (Telegram alert) but the local copy stays.
 #
-# One-time setup (OAuth "Desktop app" credentials + refresh token):
+# One-time setup (OAuth "Web application" credentials + refresh token):
 #   1. https://console.cloud.google.com -> create a project -> enable "Google Drive API".
 #   2. "OAuth consent screen": External, add your Google account as a test user,
 #      then PUBLISH the app ("In production"). Refresh tokens of apps left in
 #      "Testing" expire after 7 days.
-#   3. "Credentials" -> Create OAuth client ID -> type "Desktop app"
+#   3. "Credentials" -> Create OAuth client ID -> type "Web application".
+#      Under "Authorized redirect URIs" add:
+#        https://developers.google.com/oauthplayground
 #      -> copy the client ID and client secret.
 #   4. https://developers.google.com/oauthplayground -> gear icon ->
 #      "Use your own OAuth credentials" -> paste the client ID/secret.
