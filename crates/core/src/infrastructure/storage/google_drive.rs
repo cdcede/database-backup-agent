@@ -341,7 +341,7 @@ impl GoogleDriveStorage {
         session_uri: &str,
         body: Vec<u8>,
         content_range: String,
-    ) -> Result<UploadProgress, BackupError> {
+    ) -> Result<UploadProgress, Failure> {
         let response = self
             .http
             .put(session_uri)
@@ -350,7 +350,9 @@ impl GoogleDriveStorage {
             .send()
             .await
             // `without_url`: the session URI itself grants upload access, keep it out of logs.
-            .map_err(|e| upload_error(format!("Google Drive chunk upload failed: {}", e.without_url())))?;
+            .map_err(|e| {
+                Failure::transient(format!("Google Drive chunk upload failed: {}", e.without_url()))
+            })?;
 
         let status = response.status();
         if status.as_u16() == 308 {
@@ -368,16 +370,16 @@ impl GoogleDriveStorage {
                 .json()
                 .await
                 .map_err(|e| {
-                    upload_error(format!("Invalid Google Drive upload response: {}", e.without_url()))
+                    Failure::transient(format!("Invalid Google Drive upload response: {}", e.without_url()))
                 })?;
             return Ok(UploadProgress::Done(file.id));
         }
 
         let body = response.text().await.unwrap_or_default();
-        Err(upload_error(format!(
-            "Google Drive chunk upload rejected ({}): {}",
-            status, body
-        )))
+        Err(Failure::from_status(
+            status,
+            format!("Google Drive chunk upload rejected ({}): {}", status, body),
+        ))
     }
 }
 
@@ -419,12 +421,13 @@ impl Storage for GoogleDriveStorage {
                 .await
             {
                 Ok(progress) => progress,
-                Err(e) => {
+                Err(failure) => {
                     failures += 1;
-                    if failures >= MAX_ATTEMPTS {
-                        return Err(e);
+                    // Permanent rejections (quota, permissions, expired session) fail fast.
+                    if !failure.retryable || failures >= MAX_ATTEMPTS {
+                        return Err(failure.error);
                     }
-                    tracing::warn!(error = %e, attempt = failures, "Retrying Google Drive chunk");
+                    tracing::warn!(error = %failure.error, attempt = failures, "Retrying Google Drive chunk");
                     tokio::time::sleep(self.retry_delay * failures).await;
                     // Ask Google how many bytes it really kept before resending.
                     match self
@@ -550,6 +553,8 @@ mod tests {
         stall: bool,
         /// Never answer chunk requests (simulates a hung connection).
         hang: bool,
+        /// Answer every chunk with 403 (e.g. quota exceeded / permission revoked).
+        reject_chunks: bool,
         /// Answer the first token request with a 503.
         fail_token_once: bool,
         /// Answer the first session request with a 503.
@@ -671,6 +676,10 @@ mod tests {
         // PUT /session
         if s.hang {
             return None;
+        }
+        if s.reject_chunks {
+            s.chunk_puts += 1;
+            return Some(reply("403 Forbidden", "", r#"{"error":"storageQuotaExceeded"}"#));
         }
         if s.stall {
             s.chunk_puts += 1;
@@ -809,6 +818,18 @@ mod tests {
 
         assert!(err.contains("invalid_grant"), "{err}");
         assert_eq!(state.lock().unwrap().token_requests, 1, "4xx is permanent: no retry");
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_permanently_rejected_chunks() {
+        let state = Arc::new(Mutex::new(FakeDrive {
+            reject_chunks: true,
+            ..Default::default()
+        }));
+        let err = run_upload(state.clone(), b"0123456789").await.unwrap_err().to_string();
+
+        assert!(err.contains("storageQuotaExceeded"), "{err}");
+        assert_eq!(state.lock().unwrap().chunk_puts, 1, "4xx is permanent: no retry");
     }
 
     #[test]
