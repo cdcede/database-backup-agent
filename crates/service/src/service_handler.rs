@@ -269,14 +269,7 @@ async fn execute_single_backup(db_name: &str, state: Arc<DaemonState>, retention
     let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
     let storage_filename = format!("{}_{}.zip", db_name, timestamp);
 
-    let notifier = if config.telegram.enabled {
-        AppNotifier::Telegram(TelegramNotifier::new(
-            config.telegram.bot_token.clone(),
-            config.telegram.chat_id.clone(),
-        ))
-    } else {
-        AppNotifier::Noop(NoopNotifier)
-    };
+    let notifier = build_notifier(&config);
 
     let storage = match config.storage.provider {
         StorageProviderType::Local => {
@@ -333,7 +326,7 @@ async fn execute_single_backup(db_name: &str, state: Arc<DaemonState>, retention
         .google_drive
         .enabled
         .then(|| GoogleDriveStorage::new(&config.storage.google_drive));
-    let storage = MirroredStorage::new(storage, gdrive);
+    let storage = MirroredStorage::new(storage, gdrive.as_ref());
 
     let orchestrator = BackupOrchestrator::new(db, compressor, storage, notifier);
     let result = orchestrator.run_backup(db_name, &temp_dir, &storage_filename).await;
@@ -361,23 +354,41 @@ async fn execute_single_backup(db_name: &str, state: Arc<DaemonState>, retention
 
     // 6. Google Drive retention — only after THIS backup reached Drive, so a run of
     //    failed uploads never removes the last good cloud copies.
-    if config.storage.google_drive.enabled && result.status == BackupStatus::Completed {
-        let gdrive = GoogleDriveStorage::new(&config.storage.google_drive);
+    if let Some(gdrive) = gdrive.as_ref().filter(|_| should_clean_drive(&config, &result)) {
         match gdrive.clean_old_backups(db_name, retention_days).await {
             Ok(deleted) => tracing::info!(
                 database = db_name,
                 deleted_count = deleted,
                 "Google Drive retention cleanup completed"
             ),
-            Err(e) => tracing::error!(
-                "Failed to run Google Drive retention cleanup for database '{}': {}",
-                db_name,
-                e
-            ),
+            Err(e) => {
+                let reason = format!("Google Drive retention cleanup failed: {}", e);
+                tracing::error!(database = db_name, "{}", reason);
+                // Alert: if cleanup keeps failing, Drive fills up silently until uploads break.
+                // The backup itself succeeded, so the job result stays unchanged.
+                let _ = build_notifier(&config).send_failure(db_name, &reason).await;
+            }
         }
     }
 
     result
+}
+
+/// Drive retention only runs when Drive is enabled AND this backup completed
+/// (i.e. it reached Drive), so failed uploads never delete older cloud copies.
+fn should_clean_drive(config: &AppConfig, result: &BackupResult) -> bool {
+    config.storage.google_drive.enabled && result.status == BackupStatus::Completed
+}
+
+fn build_notifier(config: &AppConfig) -> AppNotifier {
+    if config.telegram.enabled {
+        AppNotifier::Telegram(TelegramNotifier::new(
+            config.telegram.bot_token.clone(),
+            config.telegram.chat_id.clone(),
+        ))
+    } else {
+        AppNotifier::Noop(NoopNotifier)
+    }
 }
 
 pub async fn run_task_backup_job(task_name: &str, state: Arc<DaemonState>) {
@@ -599,6 +610,23 @@ mod tests {
             storage_destination: "local:/tmp/test.zip".to_string(),
             error_message: None,
         }
+    }
+
+    #[test]
+    fn drive_retention_runs_only_after_successful_backup_with_drive_enabled() {
+        let mut config = AppConfig::default();
+        let completed = make_result(0);
+        let mut failed = make_result(1);
+        failed.status = BackupStatus::Failed;
+
+        assert!(!should_clean_drive(&config, &completed), "Drive disabled: never clean");
+
+        config.storage.google_drive.enabled = true;
+        assert!(should_clean_drive(&config, &completed));
+        assert!(
+            !should_clean_drive(&config, &failed),
+            "a failed upload must never delete older cloud copies"
+        );
     }
 
     /// T5.2 — 300 entries with cap 500 → no entries removed
