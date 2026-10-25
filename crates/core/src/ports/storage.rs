@@ -24,3 +24,15 @@ pub trait Storage: Send + Sync {
         filename: &str,
     ) -> impl std::future::Future<Output = Result<String, BackupError>> + Send;
 }
+
+/// A borrowed storage is also a storage, so one adapter instance can be shared
+/// (e.g. the Drive client used for both the upload and the retention cleanup).
+impl<S: Storage> Storage for &S {
+    fn upload(
+        &self,
+        source: &Path,
+        filename: &str,
+    ) -> impl std::future::Future<Output = Result<String, BackupError>> + Send {
+        (**self).upload(source, filename)
+    }
+}
