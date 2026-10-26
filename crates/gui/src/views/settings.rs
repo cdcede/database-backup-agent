@@ -2,6 +2,7 @@ use eframe::egui;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
+use crate::app::Notifier;
 use crate::ipc_client::IpcClientHandle;
 use backup_agent_core::domain::config::{AppConfig, AuthMethod, SqlServerConfig, BackupConfig, StorageConfig, StorageProviderType, S3Config, TelegramConfig, BackupTaskConfig, GoogleDriveConfig};
 use backup_agent_core::ipc::messages::{IpcRequest, IpcResponse};
@@ -91,8 +92,15 @@ pub struct SettingsState {
     
     // Feedback
     pub errors: Vec<String>,
-    pub success: Option<String>,
     pub is_saving: bool,
+    /// Destructive action waiting for the user to confirm it.
+    pub pending_confirm: Option<ConfirmAction>,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ConfirmAction {
+    DeleteTask(usize),
+    ResetForm,
 }
 
 impl SettingsState {
@@ -141,12 +149,14 @@ impl SettingsState {
             is_testing_connection: false,
 
             errors: Vec::new(),
-            success: None,
             is_saving: false,
+            pending_confirm: None,
         }
     }
 
-    fn to_config(&self) -> Result<AppConfig, String> {
+    /// Build the config to save. Sections the form does not edit (`service`)
+    /// are carried over from `base` so saving never resets them.
+    fn to_config(&self, base: &AppConfig) -> Result<AppConfig, String> {
         let port = self.port.parse::<u16>().map_err(|_| "SQL Port must be a valid number (0-65535)".to_string())?;
         
         let auth_method = match self.auth_method.as_str() {
@@ -231,7 +241,7 @@ impl SettingsState {
                     folder_id: extract_drive_folder_id(&self.gdrive_folder_id),
                 },
             },
-            service: Default::default(),
+            service: base.service.clone(),
         };
 
         Ok(config)
@@ -260,13 +270,23 @@ fn text_input(ui: &mut egui::Ui, text: &mut String, is_password: bool) -> egui::
     ui.add(edit)
 }
 
-pub fn show(ui: &mut egui::Ui, client: &IpcClientHandle, config_opt: &Option<AppConfig>) {
+pub fn show(
+    ui: &mut egui::Ui,
+    client: &IpcClientHandle,
+    notifier: &Notifier,
+    config_opt: &Option<AppConfig>,
+    service_error: Option<&str>,
+) {
     let Some(config) = config_opt else {
         ui.vertical_centered(|ui| {
             ui.add_space(40.0);
-            ui.spinner();
-            ui.add_space(10.0);
-            ui.label("Loading configuration settings...");
+            if service_error.is_some() {
+                ui.label("Settings will load once the Backup Agent service is reachable.");
+            } else {
+                ui.spinner();
+                ui.add_space(10.0);
+                ui.label("Loading configuration settings...");
+            }
         });
         return;
     };
@@ -309,19 +329,6 @@ pub fn show(ui: &mut egui::Ui, client: &IpcClientHandle, config_opt: &Option<App
                                 );
                             }
                         });
-                    });
-                    ui.add_space(10.0);
-                }
-
-                if let Some(ref succ) = state.success {
-                    ui.group(|ui| {
-                        ui.set_width(ui.available_width());
-                        ui.style_mut().visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(15, 45, 25);
-                        ui.label(
-                            egui::RichText::new(succ)
-                                .color(egui::Color32::from_rgb(34, 197, 94))
-                                .strong()
-                        );
                     });
                     ui.add_space(10.0);
                 }
@@ -402,38 +409,27 @@ pub fn show(ui: &mut egui::Ui, client: &IpcClientHandle, config_opt: &Option<App
                                         state.is_testing_connection = true;
                                         state.connection_test_status = None;
 
-                                        std::thread::spawn(move || {
-                                            let rt = tokio::runtime::Runtime::new().unwrap();
-                                            rt.block_on(async {
-                                                match client_clone.send(IpcRequest::TestConnection(db_config)).await {
-                                                    Ok(IpcResponse::Databases(dbs)) => {
-                                                        let lock_cell = SETTINGS_STATE.get().unwrap();
-                                                        let mut l = lock_cell.lock().unwrap();
-                                                        if let Some(s) = l.as_mut() {
-                                                            s.discovered_databases = dbs;
-                                                            s.connection_test_status = Some(Ok("Connection successful! Databases discovered.".to_string()));
-                                                            s.is_testing_connection = false;
-                                                        }
+                                        let notifier = notifier.clone();
+                                        client.spawn(async move {
+                                            let status = match client_clone.send(IpcRequest::TestConnection(db_config)).await {
+                                                Ok(IpcResponse::Databases(dbs)) => Ok(dbs),
+                                                Ok(IpcResponse::Error(e)) => Err(format!("Error: {}", e)),
+                                                Ok(_) => Err("Unexpected response from the service.".to_string()),
+                                                Err(e) => Err(format!("Service error: {}", e)),
+                                            };
+                                            let lock_cell = SETTINGS_STATE.get().unwrap();
+                                            let mut l = lock_cell.lock().unwrap();
+                                            if let Some(s) = l.as_mut() {
+                                                s.is_testing_connection = false;
+                                                s.connection_test_status = Some(match status {
+                                                    Ok(dbs) => {
+                                                        s.discovered_databases = dbs;
+                                                        Ok("Connection successful! Databases discovered.".to_string())
                                                     }
-                                                    Ok(IpcResponse::Error(e)) => {
-                                                        let lock_cell = SETTINGS_STATE.get().unwrap();
-                                                        let mut l = lock_cell.lock().unwrap();
-                                                        if let Some(s) = l.as_mut() {
-                                                            s.connection_test_status = Some(Err(format!("Error: {}", e)));
-                                                            s.is_testing_connection = false;
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        let lock_cell = SETTINGS_STATE.get().unwrap();
-                                                        let mut l = lock_cell.lock().unwrap();
-                                                        if let Some(s) = l.as_mut() {
-                                                            s.connection_test_status = Some(Err(format!("IPC Error: {}", e)));
-                                                            s.is_testing_connection = false;
-                                                        }
-                                                    }
-                                                    _ => {}
-                                                }
-                                            });
+                                                    Err(e) => Err(e),
+                                                });
+                                            }
+                                            notifier.repaint();
                                         });
                                     }
                                 }
@@ -509,8 +505,7 @@ pub fn show(ui: &mut egui::Ui, client: &IpcClientHandle, config_opt: &Option<App
                                     .min_size(egui::vec2(90.0, 24.0));
 
                                     if ui.add(del_btn).clicked() {
-                                        state.tasks.remove(state.selected_task_index);
-                                        state.selected_task_index = 0;
+                                        state.pending_confirm = Some(ConfirmAction::DeleteTask(state.selected_task_index));
                                     }
                                 }
                             });
@@ -774,9 +769,8 @@ pub fn show(ui: &mut egui::Ui, client: &IpcClientHandle, config_opt: &Option<App
                     } else {
                         if ui.add(save_btn).clicked() {
                             state.errors.clear();
-                            state.success = None;
-                            
-                            match state.to_config() {
+
+                            match state.to_config(config) {
                                 Ok(new_config) => {
                                     let mut core_errors = new_config.validate();
                                     if !core_errors.is_empty() {
@@ -784,44 +778,43 @@ pub fn show(ui: &mut egui::Ui, client: &IpcClientHandle, config_opt: &Option<App
                                     } else {
                                         state.is_saving = true;
                                         let client_clone = client.clone();
-                                        
-                                        std::thread::spawn(move || {
-                                            let rt = tokio::runtime::Runtime::new().unwrap();
-                                            rt.block_on(async {
-                                                match client_clone.send(IpcRequest::UpdateConfig(new_config)).await {
-                                                    Ok(IpcResponse::Ok) => {
-                                                        let lock_cell = SETTINGS_STATE.get().unwrap();
-                                                        let mut l = lock_cell.lock().unwrap();
-                                                        if let Some(s) = l.as_mut() {
-                                                            s.success = Some("Configurations saved and scheduler hot-reloaded successfully!".to_string());
-                                                            s.is_saving = false;
-                                                        }
+                                        let notifier = notifier.clone();
+
+                                        client.spawn(async move {
+                                            let error = match client_clone.send(IpcRequest::UpdateConfig(new_config)).await {
+                                                Ok(IpcResponse::Ok) => None,
+                                                Ok(IpcResponse::Error(e)) => Some(format!("Daemon persistence error: {}", e)),
+                                                Ok(_) => Some("Unexpected response from the service.".to_string()),
+                                                Err(e) => Some(format!("Daemon connection error: {}", e)),
+                                            };
+                                            {
+                                                let lock_cell = SETTINGS_STATE.get().unwrap();
+                                                let mut l = lock_cell.lock().unwrap();
+                                                if let Some(s) = l.as_mut() {
+                                                    s.is_saving = false;
+                                                    if let Some(ref e) = error {
+                                                        s.errors.push(e.clone());
                                                     }
-                                                    Ok(IpcResponse::Error(e)) => {
-                                                        let lock_cell = SETTINGS_STATE.get().unwrap();
-                                                        let mut l = lock_cell.lock().unwrap();
-                                                        if let Some(s) = l.as_mut() {
-                                                            s.errors.push(format!("Daemon persistence error: {}", e));
-                                                            s.is_saving = false;
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        let lock_cell = SETTINGS_STATE.get().unwrap();
-                                                        let mut l = lock_cell.lock().unwrap();
-                                                        if let Some(s) = l.as_mut() {
-                                                            s.errors.push(format!("Daemon connection error: {}", e));
-                                                            s.is_saving = false;
-                                                        }
-                                                    }
-                                                    _ => {}
                                                 }
-                                            });
+                                            }
+                                            match error {
+                                                None => notifier.success("Settings saved and scheduler reloaded."),
+                                                Some(e) => notifier.error(format!("Settings not saved. {e}")),
+                                            }
                                         });
                                     }
                                 }
                                 Err(e) => {
                                     state.errors.push(e);
                                 }
+                            }
+
+                            // Errors are listed at the top of the page, far from this button.
+                            if !state.errors.is_empty() {
+                                notifier.error(format!(
+                                    "Settings not saved: {} problem(s) listed at the top of the page.",
+                                    state.errors.len()
+                                ));
                             }
                         }
                     }
@@ -836,11 +829,75 @@ pub fn show(ui: &mut egui::Ui, client: &IpcClientHandle, config_opt: &Option<App
                     .min_size(egui::vec2(100.0, 36.0));
 
                     if ui.add(reset_btn).clicked() {
-                        *state = SettingsState::from_config(config);
+                        state.pending_confirm = Some(ConfirmAction::ResetForm);
                     }
                 });
             });
         });
+
+    show_confirmation(ui.ctx(), state, config);
+}
+
+/// Ask before discarding work: deleting a task or resetting the whole form.
+fn show_confirmation(ctx: &egui::Context, state: &mut SettingsState, config: &AppConfig) {
+    let Some(action) = state.pending_confirm else {
+        return;
+    };
+
+    let (title, message, confirm_label) = match action {
+        ConfirmAction::DeleteTask(idx) => (
+            "Delete task?",
+            format!(
+                "Task '{}' will be removed from the form. The change takes effect when you save.",
+                state.tasks.get(idx).map(|t| t.name.as_str()).unwrap_or("")
+            ),
+            "Delete Task",
+        ),
+        ConfirmAction::ResetForm => (
+            "Discard changes?",
+            "All unsaved edits will be lost and the form will show the saved settings again.".to_string(),
+            "Discard Changes",
+        ),
+    };
+
+    let mut confirmed = false;
+    let mut cancelled = false;
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.label(message);
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let confirm_btn = egui::Button::new(
+                    egui::RichText::new(confirm_label)
+                        .color(egui::Color32::from_rgb(255, 255, 255))
+                        .strong()
+                )
+                .fill(egui::Color32::from_rgb(185, 28, 28));
+                confirmed = ui.add(confirm_btn).clicked();
+                cancelled = ui.button("Cancel").clicked();
+            });
+        });
+
+    if confirmed {
+        match action {
+            ConfirmAction::DeleteTask(idx) => {
+                if idx < state.tasks.len() && state.tasks.len() > 1 {
+                    state.tasks.remove(idx);
+                    state.selected_task_index = idx.min(state.tasks.len() - 1);
+                }
+                state.pending_confirm = None;
+            }
+            ConfirmAction::ResetForm => {
+                // Rebuilding the state also clears `pending_confirm`.
+                *state = SettingsState::from_config(config);
+            }
+        }
+    } else if cancelled {
+        state.pending_confirm = None;
+    }
 }
 
 // ============================================================================
@@ -1073,6 +1130,40 @@ mod tests {
 
         let compiled = compile_schedule_string(parsed.0, &parsed.1, &parsed.2, &parsed.3, parsed.4, &parsed.5, &parsed.6);
         assert_eq!(compiled.unwrap(), "0 0 12 5 * * *");
+    }
+
+    fn config_with_one_task() -> AppConfig {
+        let mut config = AppConfig::default();
+        config.tasks = vec![BackupTaskConfig {
+            name: "Nightly".into(),
+            databases: vec!["OrdersDB".into()],
+            schedule: "02:00".into(),
+            retention_days: 7,
+        }];
+        config
+    }
+
+    #[test]
+    fn saving_preserves_service_section() {
+        let mut config = config_with_one_task();
+        config.service.history_max_entries = 42;
+        config.service.log_rotate_threshold_bytes = 1_048_576;
+
+        let saved = SettingsState::from_config(&config).to_config(&config).unwrap();
+
+        assert_eq!(saved.service, config.service);
+    }
+
+    #[test]
+    fn saving_keeps_edited_form_values() {
+        let config = config_with_one_task();
+        let mut state = SettingsState::from_config(&config);
+        state.host = "  sql-prod  ".into();
+
+        let saved = state.to_config(&config).unwrap();
+
+        assert_eq!(saved.sql_server.host, "sql-prod");
+        assert_eq!(saved.tasks, config.tasks);
     }
 
     #[test]

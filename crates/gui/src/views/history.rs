@@ -16,7 +16,8 @@ fn draw_badge(ui: &mut egui::Ui, text: &str, text_color: egui::Color32, bg_color
         });
 }
 
-pub fn show(ui: &mut egui::Ui, history: &[BackupResult]) {
+/// `history` is `None` until the first fetch completes.
+pub fn show(ui: &mut egui::Ui, history: Option<&[BackupResult]>, service_error: Option<&str>) {
     ui.vertical(|ui| {
         ui.heading(
             egui::RichText::new("Backup History")
@@ -31,24 +32,46 @@ pub fn show(ui: &mut egui::Ui, history: &[BackupResult]) {
         );
         ui.add_space(20.0);
 
-        if history.is_empty() {
-            egui::Frame::none()
-                .fill(egui::Color32::from_rgb(20, 26, 38))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)))
-                .rounding(6.0)
-                .inner_margin(20.0)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width() - 24.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            egui::RichText::new("No historical backup records found.")
-                                .color(egui::Color32::from_rgb(148, 163, 184))
-                                .italics(),
-                        );
-                    });
+        let history = match history {
+            Some(h) if !h.is_empty() => h,
+            None if service_error.is_none() => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(40.0);
+                    ui.spinner();
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new("Loading backup history...")
+                            .color(egui::Color32::from_rgb(140, 155, 175))
+                            .italics(),
+                    );
                 });
-            return;
-        }
+                return;
+            }
+            _ => {
+                // "No records" would be misleading when we simply could not ask.
+                let message = if service_error.is_some() {
+                    "Backup history is unavailable while the service is unreachable."
+                } else {
+                    "No historical backup records found."
+                };
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(20, 26, 38))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)))
+                    .rounding(6.0)
+                    .inner_margin(20.0)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width() - 24.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                egui::RichText::new(message)
+                                    .color(egui::Color32::from_rgb(148, 163, 184))
+                                    .italics(),
+                            );
+                        });
+                    });
+                return;
+            }
+        };
 
         // Scrollable table area (both vertical and horizontal to support smaller screens)
         egui::ScrollArea::both()

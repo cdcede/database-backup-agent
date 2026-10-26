@@ -1,15 +1,18 @@
 use eframe::egui;
 
+use crate::app::Notifier;
 use crate::ipc_client::IpcClientHandle;
 use backup_agent_core::domain::config::AppConfig;
 use backup_agent_core::domain::backup_job::BackupJob;
-use backup_agent_core::ipc::messages::IpcRequest;
+use backup_agent_core::ipc::messages::{IpcRequest, IpcResponse};
 
 pub fn show(
     ui: &mut egui::Ui,
     client: &IpcClientHandle,
+    notifier: &Notifier,
     config_opt: &Option<AppConfig>,
     active_jobs: &[BackupJob],
+    service_error: Option<&str>,
 ) {
     egui::ScrollArea::vertical()
         .max_width(ui.available_width() - 24.0)
@@ -31,10 +34,17 @@ pub fn show(
         let Some(config) = config_opt else {
             ui.vertical_centered(|ui| {
                 ui.add_space(40.0);
-                ui.spinner();
-                ui.add_space(10.0);
+                // While the service is unreachable the banner above explains why;
+                // a spinner here would suggest progress that is not happening.
+                let message = if service_error.is_some() {
+                    "The dashboard will load once the Backup Agent service is reachable."
+                } else {
+                    ui.spinner();
+                    ui.add_space(10.0);
+                    "Connecting to Backup Agent Service..."
+                };
                 ui.label(
-                    egui::RichText::new("Connecting to Backup Agent Service...")
+                    egui::RichText::new(message)
                         .color(egui::Color32::from_rgb(140, 155, 175))
                         .italics()
                 );
@@ -221,13 +231,22 @@ pub fn show(
                         if ui.add(trigger_btn).clicked() {
                             let selected_db = db_list[selected].clone();
                             let client_clone = client.clone();
-                            std::thread::spawn(move || {
-                                let rt = tokio::runtime::Runtime::new().unwrap();
-                                let _ = rt.block_on(async {
-                                    let _ = client_clone.send(IpcRequest::TriggerBackup {
-                                        database_name: selected_db,
-                                    }).await;
-                                });
+                            let notifier = notifier.clone();
+                            client.spawn(async move {
+                                match client_clone.send(IpcRequest::TriggerBackup {
+                                    database_name: selected_db.clone(),
+                                }).await {
+                                    Ok(IpcResponse::Ok) => notifier.success(format!(
+                                        "Backup of '{selected_db}' started. Check History for the result."
+                                    )),
+                                    Ok(IpcResponse::Error(e)) => notifier.error(format!(
+                                        "Could not start backup of '{selected_db}': {e}"
+                                    )),
+                                    Ok(_) => notifier.error("Unexpected response from the service."),
+                                    Err(e) => notifier.error(format!(
+                                        "Could not start backup of '{selected_db}': {e}"
+                                    )),
+                                }
                             });
                         }
                     }
