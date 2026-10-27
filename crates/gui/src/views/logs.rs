@@ -45,6 +45,75 @@ pub(crate) fn read_log_tail(path: &Path, max_lines: usize) -> std::io::Result<Ve
     Ok(lines[skip..].iter().map(|l| l.to_string()).collect())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(crate) enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+/// Level of a log line, `None` for lines without one (e.g. continuations).
+pub(crate) fn line_level(line: &str) -> Option<LogLevel> {
+    if line.contains("ERROR") || line.contains("FATAL") {
+        Some(LogLevel::Error)
+    } else if line.contains("WARN") {
+        Some(LogLevel::Warn)
+    } else if line.contains("INFO") {
+        Some(LogLevel::Info)
+    } else if line.contains("DEBUG") {
+        Some(LogLevel::Debug)
+    } else {
+        None
+    }
+}
+
+/// What the user narrowed the log view down to.
+#[derive(Clone, Default, Debug)]
+pub(crate) struct LogFilter {
+    /// Show only lines at this level or above; `None` shows every line.
+    pub min_level: Option<LogLevel>,
+    /// Case-insensitive text the line must contain.
+    pub query: String,
+}
+
+impl LogFilter {
+    pub(crate) fn matches(&self, line: &str) -> bool {
+        let level_ok = match self.min_level {
+            None => true,
+            // Lines without a level (continuations) are hidden by a level filter.
+            Some(min) => line_level(line).map_or(false, |level| level >= min),
+        };
+        let query = self.query.trim().to_lowercase();
+        level_ok && (query.is_empty() || line.to_lowercase().contains(&query))
+    }
+
+    fn is_active(&self) -> bool {
+        self.min_level.is_some() || !self.query.trim().is_empty()
+    }
+}
+
+fn show_filter_bar(ui: &mut egui::Ui, filter: &mut LogFilter) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Level:");
+        ui.selectable_value(&mut filter.min_level, None, "All");
+        ui.selectable_value(&mut filter.min_level, Some(LogLevel::Info), "Info+");
+        ui.selectable_value(&mut filter.min_level, Some(LogLevel::Warn), "Warnings+");
+        ui.selectable_value(&mut filter.min_level, Some(LogLevel::Error), "Errors");
+        ui.add_space(12.0);
+
+        ui.add(
+            egui::TextEdit::singleline(&mut filter.query)
+                .hint_text("🔍 Search log lines")
+                .desired_width(240.0),
+        );
+
+        if filter.is_active() && ui.button("✖ Clear filters").clicked() {
+            *filter = LogFilter::default();
+        }
+    });
+}
+
 fn file_stamp(path: &Path) -> Option<(u64, Option<SystemTime>)> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.len(), meta.modified().ok()))
@@ -122,6 +191,21 @@ pub fn show(ui: &mut egui::Ui, notifier: &Notifier) {
                         .color(theme::DANGER)
                 );
             } else {
+                let filter_id = egui::Id::new("logs.filter");
+                let mut filter: LogFilter = ui.ctx().data(|d| d.get_temp(filter_id)).unwrap_or_default();
+                show_filter_bar(ui, &mut filter);
+                ui.ctx().data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+
+                if filter.is_active() {
+                    let shown = cache.lines.iter().filter(|l| filter.matches(l)).count();
+                    ui.label(
+                        egui::RichText::new(format!("Showing {shown} of the last {} lines", cache.lines.len()))
+                            .color(theme::TEXT_MUTED)
+                            .size(11.5),
+                    );
+                }
+                ui.add_space(8.0);
+
                 // Use ScrollArea::both() to scroll horizontally and vertically
                 egui::ScrollArea::both()
                     .max_width(ui.available_width() - 24.0)
@@ -137,17 +221,14 @@ pub fn show(ui: &mut egui::Ui, notifier: &Notifier) {
                                 // Set minimum width so horizontal scroll kicks in
                                 ui.set_min_width(ui.available_width());
                                 ui.vertical(|ui| {
-                                    for line in cache.lines.iter() {
-                                        let mut color = theme::LOG_TEXT;
-                                        if line.contains("ERROR") || line.contains("FATAL") {
-                                            color = theme::LOG_ERROR; // soft light red
-                                        } else if line.contains("WARN") || line.contains("WARNING") {
-                                            color = theme::LOG_WARN; // soft light orange
-                                        } else if line.contains("INFO") {
-                                            color = theme::LOG_INFO; // soft light teal
-                                        } else if line.contains("DEBUG") {
-                                            color = theme::LOG_DEBUG;
-                                        }
+                                    for line in cache.lines.iter().filter(|l| filter.matches(l)) {
+                                        let color = match line_level(line) {
+                                            Some(LogLevel::Error) => theme::LOG_ERROR,
+                                            Some(LogLevel::Warn) => theme::LOG_WARN,
+                                            Some(LogLevel::Info) => theme::LOG_INFO,
+                                            Some(LogLevel::Debug) => theme::LOG_DEBUG,
+                                            None => theme::LOG_TEXT,
+                                        };
 
                                         // We use Label with wrap(false) to ensure horizontal scrolling works without wrapping
                                         let text = egui::RichText::new(line.as_str())
@@ -277,6 +358,53 @@ mod tests {
             "no partial first line"
         );
         std::fs::remove_file(path).ok();
+    }
+
+    const LINES: [&str; 5] = [
+        "2026-10-27T02:00:00 INFO backup started db=OrdersDB",
+        "2026-10-27T02:00:05 WARN Drive retention failed",
+        "2026-10-27T02:00:06 ERROR Login failed for user 'sa'",
+        "    at mssql::connect",
+        "2026-10-27T02:00:07 DEBUG pipe connected",
+    ];
+
+    fn visible(filter: &LogFilter) -> Vec<&'static str> {
+        LINES.iter().copied().filter(|l| filter.matches(l)).collect()
+    }
+
+    #[test]
+    fn line_level_detects_each_level() {
+        assert_eq!(line_level(LINES[0]), Some(LogLevel::Info));
+        assert_eq!(line_level(LINES[1]), Some(LogLevel::Warn));
+        assert_eq!(line_level(LINES[2]), Some(LogLevel::Error));
+        assert_eq!(line_level(LINES[3]), None);
+        assert_eq!(line_level(LINES[4]), Some(LogLevel::Debug));
+        assert_eq!(line_level("x FATAL y"), Some(LogLevel::Error));
+    }
+
+    #[test]
+    fn default_log_filter_shows_every_line() {
+        assert_eq!(visible(&LogFilter::default()), LINES.to_vec());
+        assert!(!LogFilter::default().is_active());
+    }
+
+    #[test]
+    fn level_filter_shows_that_level_and_above() {
+        let warn = LogFilter { min_level: Some(LogLevel::Warn), ..Default::default() };
+        assert_eq!(visible(&warn), vec![LINES[1], LINES[2]]);
+
+        let errors = LogFilter { min_level: Some(LogLevel::Error), ..Default::default() };
+        assert_eq!(visible(&errors), vec![LINES[2]]);
+    }
+
+    #[test]
+    fn log_text_search_is_case_insensitive_and_combines_with_level() {
+        let search = LogFilter { query: "ordersdb".into(), ..Default::default() };
+        assert_eq!(visible(&search), vec![LINES[0]]);
+
+        let combined = LogFilter { min_level: Some(LogLevel::Warn), query: "LOGIN".into() };
+        assert_eq!(visible(&combined), vec![LINES[2]]);
+        assert!(combined.is_active());
     }
 
     #[test]
