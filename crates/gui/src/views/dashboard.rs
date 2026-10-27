@@ -1,19 +1,39 @@
 use eframe::egui;
 
-use crate::theme;
-
 use crate::app::Notifier;
 use crate::ipc_client::IpcClientHandle;
+use crate::theme;
 use backup_agent_core::domain::config::AppConfig;
 use backup_agent_core::domain::backup_job::BackupJob;
+use backup_agent_core::domain::backup_result::{BackupResult, BackupStatus};
 use backup_agent_core::ipc::messages::{IpcRequest, IpcResponse};
 
+/// Most recent backup in `history`, by start time.
+pub(crate) fn last_backup(history: &[BackupResult]) -> Option<&BackupResult> {
+    history.iter().max_by_key(|r| r.started_at)
+}
+
+/// One-line outcome of a backup for the "Last Backup" card, and its color.
+pub(crate) fn last_backup_summary(result: &BackupResult) -> (String, egui::Color32) {
+    let time = result.started_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M");
+    match result.status {
+        BackupStatus::Completed => {
+            let size = result.human_compressed_size().unwrap_or_else(|| result.human_size());
+            (format!("✔ Success · {time} · {size}"), theme::SUCCESS)
+        }
+        BackupStatus::Failed => (format!("✖ Failed · {time}"), theme::DANGER),
+        ref other => (format!("{other:?} · {time}"), theme::ACCENT),
+    }
+}
+
+/// `history` is `None` until it is fetched for the first time.
 pub fn show(
     ui: &mut egui::Ui,
     client: &IpcClientHandle,
     notifier: &Notifier,
     config_opt: &Option<AppConfig>,
     active_jobs: &[BackupJob],
+    history: Option<&[BackupResult]>,
     service_error: Option<&str>,
 ) {
     egui::ScrollArea::vertical()
@@ -91,6 +111,23 @@ pub fn show(
             let status = if config.telegram.enabled { "Telegram Active" } else { "Disabled" };
             let sub = if config.telegram.enabled { &config.telegram.chat_id } else { "" };
             draw_card(ui, "🔔 Notifications", status, sub);
+
+            // Last backup card: hovering a failed one shows why it failed.
+            match history.map(last_backup) {
+                Some(Some(last)) => {
+                    let (summary, color) = last_backup_summary(last);
+                    let card = draw_card_colored(ui, "🕑 Last Backup", &last.database_name, &summary, color);
+                    if let Some(err) = &last.error_message {
+                        card.on_hover_text(err);
+                    }
+                }
+                Some(None) => {
+                    draw_card(ui, "🕑 Last Backup", "No backups yet", "Results appear here after the first run");
+                }
+                None => {
+                    draw_card(ui, "🕑 Last Backup", "Loading...", "");
+                }
+            }
         });
 
         ui.add_space(32.0);
@@ -259,6 +296,10 @@ pub fn show(
 }
 
 fn draw_card(ui: &mut egui::Ui, title: &str, value: &str, sub: &str) {
+    draw_card_colored(ui, title, value, sub, theme::ACCENT);
+}
+
+fn draw_card_colored(ui: &mut egui::Ui, title: &str, value: &str, sub: &str, sub_color: egui::Color32) -> egui::Response {
     egui::Frame::none()
         .fill(theme::RAISED) // Slate-800
         .stroke(egui::Stroke::new(1.0, theme::BORDER)) // Slate-700
@@ -285,10 +326,57 @@ fn draw_card(ui: &mut egui::Ui, title: &str, value: &str, sub: &str) {
                 
                 // Truncate the card subtext if it's too long, preventing it from overflowing the card boundary
                 let text = egui::RichText::new(sub)
-                    .color(theme::ACCENT) // Electric Indigo
+                    .color(sub_color)
                     .size(10.5)
                     .italics();
                 ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Truncate));
             });
-        });
+        })
+        .response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backup_agent_core::domain::backup_result::BackupStatus;
+
+    fn result(db: &str, status: BackupStatus, started_offset_mins: i64) -> BackupResult {
+        let mut job = BackupJob::new(db);
+        job.set_status(status);
+        let mut r = BackupResult::from_completed_job(&job, 2048, Some(1024), "local:D:/backups");
+        r.started_at = r.started_at + chrono::Duration::minutes(started_offset_mins);
+        r
+    }
+
+    #[test]
+    fn last_backup_is_the_most_recent_by_start_time() {
+        // History is appended in completion order, but do not rely on it.
+        let history = vec![
+            result("OrdersDB", BackupStatus::Completed, 10),
+            result("Payroll", BackupStatus::Failed, 30),
+            result("Archive", BackupStatus::Completed, 20),
+        ];
+        let last = last_backup(&history).unwrap();
+        assert_eq!(last.database_name, "Payroll");
+        assert_eq!(last.status, BackupStatus::Failed);
+    }
+
+    #[test]
+    fn last_backup_of_empty_history_is_none() {
+        assert!(last_backup(&[]).is_none());
+    }
+
+    #[test]
+    fn last_backup_summary_shows_outcome_time_and_size() {
+        let ok = result("OrdersDB", BackupStatus::Completed, 0);
+        let (text, color) = last_backup_summary(&ok);
+        assert!(text.starts_with("✔ Success · "), "{text}");
+        assert!(text.ends_with(" · 1.0 KB"), "{text}");
+        assert_eq!(color, theme::SUCCESS);
+
+        let failed = result("OrdersDB", BackupStatus::Failed, 0);
+        let (text, color) = last_backup_summary(&failed);
+        assert!(text.starts_with("✖ Failed · "), "{text}");
+        assert_eq!(color, theme::DANGER);
+    }
 }
