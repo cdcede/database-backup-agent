@@ -54,18 +54,18 @@ pub(crate) enum LogLevel {
 }
 
 /// Level of a log line, `None` for lines without one (e.g. continuations).
+///
+/// The level is the first whitespace-separated word that names a level
+/// (`2026-10-27T02:00:00Z  INFO message`), so words inside the message, such
+/// as `status=ERROR`, do not change it.
 pub(crate) fn line_level(line: &str) -> Option<LogLevel> {
-    if line.contains("ERROR") || line.contains("FATAL") {
-        Some(LogLevel::Error)
-    } else if line.contains("WARN") {
-        Some(LogLevel::Warn)
-    } else if line.contains("INFO") {
-        Some(LogLevel::Info)
-    } else if line.contains("DEBUG") {
-        Some(LogLevel::Debug)
-    } else {
-        None
-    }
+    line.split_whitespace().find_map(|word| match word {
+        "ERROR" | "FATAL" => Some(LogLevel::Error),
+        "WARN" | "WARNING" => Some(LogLevel::Warn),
+        "INFO" => Some(LogLevel::Info),
+        "DEBUG" | "TRACE" => Some(LogLevel::Debug),
+        _ => None,
+    })
 }
 
 /// What the user narrowed the log view down to.
@@ -380,6 +380,14 @@ mod tests {
         assert_eq!(line_level(LINES[3]), None);
         assert_eq!(line_level(LINES[4]), Some(LogLevel::Debug));
         assert_eq!(line_level("x FATAL y"), Some(LogLevel::Error));
+    }
+
+    #[test]
+    fn line_level_uses_the_level_field_not_words_in_the_message() {
+        assert_eq!(line_level("2026-10-27T02:00:00 INFO job status=ERROR"), Some(LogLevel::Info));
+        assert_eq!(line_level("2026-10-27T02:00:00  WARN retry after ERROR"), Some(LogLevel::Warn));
+        assert_eq!(line_level("2026-10-27T02:00:00 INFO INFORMATIONAL"), Some(LogLevel::Info));
+        assert_eq!(line_level("no level here: status=ERROR"), None);
     }
 
     #[test]
