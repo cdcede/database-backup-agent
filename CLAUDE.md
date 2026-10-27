@@ -7,8 +7,14 @@ named pipe (bincode IPC).
 
 ## Branch and toolchain constraints (Windows Server 2012 R2)
 
-- Work on `compat/windows-server-2012r2` (includes the Google Drive mirror) or
-  branches created from it.
+- This is the **legacy** branch for one old machine (Windows 7 SP1 / Server
+  2008 R2 / Server 2012 R2). Current Windows uses `main`. This branch is never
+  merged into `main`; fixes made on `main` are ported here with
+  `git cherry-pick -x` when the old machine needs them.
+- Versions: `version` in the root `Cargo.toml` and `AppVersion` in
+  `installer/setup.iss` (`<version>-win2012r2`) must match; each release is a
+  tag `v<version>-win2012r2` with a GitHub Release carrying the installer.
+  Installers are never committed to git.
 - Toolchain is pinned to **Rust 1.77.2** in `rust-toolchain.toml`: the last
   release that targets Windows 7 / 8 / 8.1 / Server 2012 R2. Never bump it.
 - **Never run `cargo update`** and do not add dependencies that need Cargo 1.85+
@@ -55,7 +61,7 @@ if the working tree has local changes.
    ```bat
    "C:\Program Files (x86)\Inno Setup 6\iscc.exe" installer\setup.iss
    ```
-   Output: `installer\Output\BackupAgentSetup.exe`.
+   Output: `installer\Output\BackupAgentSetup-<version>.exe`.
 6. Report the installer path, its timestamp and the commit it was built from
    (`git log -1 --oneline`).
 

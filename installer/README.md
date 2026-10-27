@@ -67,12 +67,19 @@ iscc installer\setup.iss
 The compiled installer will be written to:
 
 ```
-installer\Output\BackupAgentSetup.exe
+installer\Output\BackupAgentSetup-<version>.exe
 ```
+
+`<version>` is `AppVersion` in `setup.iss` (for example `1.0.0-win2012r2`);
+keep its number equal to `version` in the root `Cargo.toml`.
+
+Installers are not committed to git: each version is a tag `v<version>`
+(for example `v1.0.0-win2012r2`) with a GitHub Release carrying the installer. Current Windows (10/11, Server
+2016+) uses the `main` branch and its `v<version>` releases instead.
 
 ### 3. Run the installer
 
-Execute `BackupAgentSetup.exe` on a Windows 10+ machine with an administrator
+Execute the installer on a Windows 7 SP1 / Server 2008 R2 or newer machine with an administrator
 account. The installer will:
 
 1. Copy both binaries to `%ProgramFiles%\BackupAgent\`
