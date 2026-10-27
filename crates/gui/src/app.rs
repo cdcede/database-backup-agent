@@ -35,6 +35,20 @@ pub enum ToastKind {
     Error,
 }
 
+/// How often the Dashboard refreshes history for its "Last Backup" card.
+/// History can hold hundreds of entries, so it is not fetched on every poll.
+const DASHBOARD_HISTORY_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Whether this poll should also fetch history. `since_last` is the time since
+/// the last history fetch, `None` when it was never fetched or must be refreshed.
+fn history_due(view: ActiveView, since_last: Option<Duration>) -> bool {
+    match view {
+        ActiveView::History => true,
+        ActiveView::Dashboard => since_last.map_or(true, |e| e >= DASHBOARD_HISTORY_INTERVAL),
+        ActiveView::Settings | ActiveView::Logs => false,
+    }
+}
+
 /// How long a toast stays on screen.
 const TOAST_DURATION: Duration = Duration::from_secs(5);
 
@@ -91,6 +105,8 @@ pub struct BackupAgentApp {
 
     // Timer
     last_update: Instant,
+    /// When history was last requested; `None` forces a fetch on the next poll.
+    last_history_fetch: Option<Instant>,
     /// Set while a status poll is running, so slow responses never pile up.
     poll_in_flight: Arc<AtomicBool>,
 }
@@ -119,6 +135,7 @@ impl BackupAgentApp {
             notifier,
             // Initialize last_update to far in the past to trigger instant load
             last_update: Instant::now() - Duration::from_secs(10),
+            last_history_fetch: None,
             poll_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -145,7 +162,10 @@ impl BackupAgentApp {
         let in_flight = self.poll_in_flight.clone();
         let repaint_ctx = ctx.clone();
         // History can hold hundreds of entries; only fetch it when it is on screen.
-        let fetch_history = self.active_view == ActiveView::History;
+        let fetch_history = history_due(self.active_view, self.last_history_fetch.map(|t| t.elapsed()));
+        if fetch_history {
+            self.last_history_fetch = Some(Instant::now());
+        }
 
         self.ipc_client.spawn(async move {
             let reachable = match client.send(IpcRequest::GetConfig).await {
@@ -235,6 +255,10 @@ impl eframe::App for BackupAgentApp {
                     self.error_message = None;
                 }
                 AppUpdateEvent::StatusFetched(jobs) => {
+                    // A job just finished: show its result without waiting for the interval.
+                    if !self.active_jobs.is_empty() && jobs.is_empty() {
+                        self.last_history_fetch = None;
+                    }
                     self.active_jobs = jobs;
                     self.error_message = None;
                 }
@@ -244,6 +268,8 @@ impl eframe::App for BackupAgentApp {
                 }
                 AppUpdateEvent::IpcError(e) => {
                     self.error_message = Some(e);
+                    // The history request was skipped or failed; retry it on reconnect.
+                    self.last_history_fetch = None;
                 }
                 AppUpdateEvent::Toast(kind, text) => {
                     self.toasts.push(Toast { kind, text, created: Instant::now() });
@@ -392,7 +418,7 @@ impl eframe::App for BackupAgentApp {
 
                 let service_error = self.error_message.as_deref();
                 match self.active_view {
-                    ActiveView::Dashboard => views::dashboard::show(ui, &self.ipc_client, &self.notifier, &self.config, &self.active_jobs, service_error),
+                    ActiveView::Dashboard => views::dashboard::show(ui, &self.ipc_client, &self.notifier, &self.config, &self.active_jobs, self.history.as_deref(), service_error),
                     ActiveView::Settings => views::settings::show(ui, &self.ipc_client, &self.notifier, &self.config, service_error),
                     ActiveView::History => views::history::show(ui, self.history.as_deref(), service_error),
                     ActiveView::Logs => views::logs::show(ui, &self.notifier),
@@ -424,4 +450,28 @@ fn setup_custom_styles(ctx: &egui::Context) {
     visuals.widgets.noninteractive.fg_stroke.color = theme::TEXT_MUTED; // Slate-400 labels
     visuals.window_rounding = 8.0.into();
     ctx.set_visuals(visuals);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_view_always_fetches_history() {
+        assert!(history_due(ActiveView::History, Some(Duration::ZERO)));
+        assert!(history_due(ActiveView::History, None));
+    }
+
+    #[test]
+    fn dashboard_fetches_history_first_time_then_at_its_own_interval() {
+        assert!(history_due(ActiveView::Dashboard, None));
+        assert!(!history_due(ActiveView::Dashboard, Some(Duration::from_secs(3))));
+        assert!(history_due(ActiveView::Dashboard, Some(DASHBOARD_HISTORY_INTERVAL)));
+    }
+
+    #[test]
+    fn other_views_never_fetch_history() {
+        assert!(!history_due(ActiveView::Settings, None));
+        assert!(!history_due(ActiveView::Logs, Some(Duration::from_secs(600))));
+    }
 }
