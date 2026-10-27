@@ -10,7 +10,7 @@
 ; Build command (from repo root):
 ;   iscc installer\setup.iss
 ;
-; Output: installer\Output\BackupAgentSetup.exe
+; Output: installer\Output\BackupAgentSetup-<AppVersion>.exe
 ;
 ; IMPORTANT — AppId GUID:
 ;   The GUID below identifies this product in the Windows registry.
@@ -38,7 +38,7 @@ DefaultGroupName={#AppName}
 
 ; Output installer binary
 OutputDir=Output
-OutputBaseFilename=BackupAgentSetup
+OutputBaseFilename=BackupAgentSetup-{#AppVersion}
 
 ; Require administrator privileges (needed for Windows Service registration)
 PrivilegesRequired=admin

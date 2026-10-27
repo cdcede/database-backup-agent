@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "backup-agent-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "backup-agent-gui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "backup-agent-core",
  "chrono",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "backup-agent-service"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "backup-agent-core",
  "chrono",
