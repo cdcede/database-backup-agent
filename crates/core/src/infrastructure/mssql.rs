@@ -138,16 +138,39 @@ impl MssqlBackup {
     /// - `N'path'` — N prefix enables Unicode paths
     /// - `FORMAT, INIT` — overwrite any existing backup set in the file
     /// - `COMPRESSION` — native SQL Server compression (60-80% size reduction)
+    /// - `CHECKSUM` — validates page checksums while reading and stores a
+    ///   backup checksum so `RESTORE VERIFYONLY` can detect corruption
     pub fn build_backup_sql(database: &str, backup_path: &Path) -> String {
         format!(
-            "BACKUP DATABASE [{database}] \
+            "BACKUP DATABASE {ident} \
              TO DISK = N'{path}' \
-             WITH FORMAT, INIT, COMPRESSION, \
-             NAME = N'{database} Full Backup'",
-            database = database,
-            path = backup_path.display(),
+             WITH FORMAT, INIT, COMPRESSION, CHECKSUM, \
+             NAME = N'{name} Full Backup'",
+            ident = quote_ident(database),
+            path = escape_literal(&backup_path.display().to_string()),
+            name = escape_literal(database),
         )
     }
+
+    /// Build the T-SQL command that checks the backup file is complete and
+    /// readable, re-validating the checksums written by `BACKUP ... CHECKSUM`.
+    pub fn build_verify_sql(backup_path: &Path) -> String {
+        format!(
+            "RESTORE VERIFYONLY FROM DISK = N'{path}' WITH CHECKSUM",
+            path = escape_literal(&backup_path.display().to_string()),
+        )
+    }
+}
+
+/// Quote an identifier for T-SQL: `]` is the only character that must be
+/// escaped inside brackets, by doubling it.
+fn quote_ident(name: &str) -> String {
+    format!("[{}]", name.replace(']', "]]"))
+}
+
+/// Escape a value for use inside an `N'...'` string literal.
+fn escape_literal(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 impl DatabaseBackup for MssqlBackup {
@@ -183,6 +206,22 @@ impl DatabaseBackup for MssqlBackup {
         })?;
 
         tracing::info!(database = database, "BACKUP DATABASE completed");
+
+        // Never ship a backup that cannot be restored: verify it before it
+        // is compressed and uploaded. A corrupt file is removed so it does
+        // not linger in the backup directory.
+        let verify_sql = Self::build_verify_sql(&backup_path);
+        if let Err(e) = client.execute(verify_sql.as_str(), &[]).await {
+            if let Err(rm) = std::fs::remove_file(&backup_path) {
+                tracing::warn!(path = %backup_path.display(), "Could not remove unverified backup: {rm}");
+            }
+            return Err(BackupError::BackupExecution {
+                database: database.to_string(),
+                reason: format!("Backup verification failed: {e}"),
+            });
+        }
+
+        tracing::info!(database = database, "Backup verified (RESTORE VERIFYONLY)");
 
         // Get file size (assumes agent runs on the SQL Server machine).
         // If the file is on a remote server, this returns 0 gracefully.
@@ -232,6 +271,46 @@ mod tests {
         assert!(
             sql.contains("[My Database]"),
             "Brackets should protect names with spaces"
+        );
+    }
+
+    #[test]
+    fn sql_uses_checksum() {
+        let sql = MssqlBackup::build_backup_sql("OrdersDB", Path::new(r"C:\Backups\o.bak"));
+        assert!(sql.contains("CHECKSUM"), "Backup must use CHECKSUM: {sql}");
+    }
+
+    #[test]
+    fn sql_escapes_closing_bracket_in_name() {
+        let sql = MssqlBackup::build_backup_sql("Sales]2024", Path::new(r"C:\Backups\s.bak"));
+        assert!(
+            sql.starts_with("BACKUP DATABASE [Sales]]2024] "),
+            "']' must be doubled inside brackets: {sql}"
+        );
+    }
+
+    #[test]
+    fn sql_escapes_single_quotes_in_path_and_name() {
+        let sql = MssqlBackup::build_backup_sql(
+            "O'Brien",
+            Path::new(r"C:\Backups\O'Brien_20260612.bak"),
+        );
+        assert!(
+            sql.contains(r"TO DISK = N'C:\Backups\O''Brien_20260612.bak'"),
+            "Quote in path must be doubled: {sql}"
+        );
+        assert!(
+            sql.contains("NAME = N'O''Brien Full Backup'"),
+            "Quote in backup set name must be doubled: {sql}"
+        );
+    }
+
+    #[test]
+    fn verify_sql_checks_backup_file_with_checksum() {
+        let sql = MssqlBackup::build_verify_sql(Path::new(r"C:\Backups\O'Brien.bak"));
+        assert_eq!(
+            sql,
+            r"RESTORE VERIFYONLY FROM DISK = N'C:\Backups\O''Brien.bak' WITH CHECKSUM"
         );
     }
 

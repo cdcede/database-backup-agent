@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "backup-agent-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -719,6 +719,7 @@ dependencies = [
  "chrono",
  "reqwest",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tiberius",
  "tokio",
@@ -731,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "backup-agent-gui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "backup-agent-core",
  "chrono",
@@ -739,11 +740,12 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
 name = "backup-agent-service"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "backup-agent-core",
  "chrono",

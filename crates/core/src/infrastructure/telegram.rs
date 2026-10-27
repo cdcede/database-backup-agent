@@ -100,6 +100,26 @@ impl TelegramNotifier {
 
         Ok(())
     }
+
+    /// Notify a non-fatal problem after a backup that itself succeeded
+    /// (e.g. cloud retention cleanup failed).
+    pub async fn send_warning(&self, database: &str, reason: &str) -> Result<(), BackupError> {
+        let message = format!(
+            "🟡 <b>Backup Warning</b>\n\n\
+             <b>Database:</b> <code>{}</code>\n\
+             <b>Issue:</b>\n<code>{}</code>",
+            escape_html(database),
+            escape_html(reason)
+        );
+
+        self.send_message(&message).await
+    }
+}
+
+/// Escape text interpolated into an HTML `parse_mode` message.
+/// Telegram only requires `&`, `<` and `>` to be escaped.
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 impl Notifier for TelegramNotifier {
@@ -112,15 +132,18 @@ impl Notifier for TelegramNotifier {
     ) -> Result<(), BackupError> {
         let size_str = humanize_bytes(size_bytes);
 
-        // We use HTML tags since they are simple to format and do not require
-        // complex escaping like MarkdownV2 does.
+        // We use HTML tags since they are simple to format and only require
+        // escaping `&`, `<` and `>` in interpolated values (see `escape_html`).
         let message = format!(
             "🟢 <b>Backup Successful!</b>\n\n\
              <b>Database:</b> <code>{}</code>\n\
              <b>Backup Size:</b> <code>{}</code>\n\
              <b>Destination:</b> <code>{}</code>\n\
              <b>Time Elapsed:</b> <code>{} seconds</code>",
-            database, size_str, destination, elapsed_secs
+            escape_html(database),
+            size_str,
+            escape_html(destination),
+            elapsed_secs
         );
 
         self.send_message(&message).await
@@ -131,7 +154,8 @@ impl Notifier for TelegramNotifier {
             "🔴 <b>Backup Failed!</b>\n\n\
              <b>Database:</b> <code>{}</code>\n\
              <b>Reason:</b>\n<code>{}</code>",
-            database, reason
+            escape_html(database),
+            escape_html(reason)
         );
 
         self.send_message(&message).await
@@ -229,6 +253,60 @@ mod tests {
         assert!(request_content.contains("\"chat_id\":\"123456789\""));
         assert!(request_content.contains("AdventureWorks"));
         assert!(request_content.contains("Database connection lost during backup"));
+    }
+
+    #[test]
+    fn escape_html_escapes_telegram_reserved_characters() {
+        assert_eq!(escape_html("a<b>&c"), "a&lt;b&gt;&amp;c");
+        assert_eq!(escape_html("plain"), "plain");
+    }
+
+    #[tokio::test]
+    async fn interpolated_text_is_html_escaped_in_every_message() {
+        // Google error bodies and paths can contain <, > and &; unescaped they make
+        // Telegram reject the whole message (HTML parse_mode) and the alert is lost.
+        let raw = "error <html> & 'quota'";
+        let escaped = "error &lt;html&gt; &amp; 'quota'";
+
+        let (url, server) = run_mock_server(200, r#"{"ok":true}"#).await;
+        let notifier = TelegramNotifier::new_with_base_url("t".into(), "1".into(), url);
+        notifier.send_failure("Db<1>", raw).await.unwrap();
+        let request = server.await.unwrap();
+        assert!(request.contains(escaped), "failure: {request}");
+        assert!(request.contains("Db&lt;1&gt;"), "failure database: {request}");
+        assert!(request.contains("<b>Backup Failed!</b>"), "own markup kept: {request}");
+
+        let (url, server) = run_mock_server(200, r#"{"ok":true}"#).await;
+        let notifier = TelegramNotifier::new_with_base_url("t".into(), "1".into(), url);
+        notifier.send_warning("Db", raw).await.unwrap();
+        assert!(server.await.unwrap().contains(escaped), "warning not escaped");
+
+        let (url, server) = run_mock_server(200, r#"{"ok":true}"#).await;
+        let notifier = TelegramNotifier::new_with_base_url("t".into(), "1".into(), url);
+        notifier.send_success("Db", 10, raw, 1).await.unwrap();
+        assert!(server.await.unwrap().contains(escaped), "success destination not escaped");
+    }
+
+    #[tokio::test]
+    async fn send_warning_is_not_labelled_as_a_failed_backup() {
+        let (mock_url, server_handle) = run_mock_server(200, r#"{"ok":true}"#).await;
+
+        let notifier = TelegramNotifier::new_with_base_url(
+            "mock-token".to_string(),
+            "123456789".to_string(),
+            mock_url,
+        );
+
+        notifier
+            .send_warning("AdventureWorks", "Google Drive retention cleanup failed")
+            .await
+            .unwrap();
+
+        let request_content = server_handle.await.unwrap();
+        assert!(request_content.contains("Backup Warning"), "{request_content}");
+        assert!(!request_content.contains("Backup Failed"), "{request_content}");
+        assert!(request_content.contains("AdventureWorks"));
+        assert!(request_content.contains("Google Drive retention cleanup failed"));
     }
 
     #[tokio::test]

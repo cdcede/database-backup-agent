@@ -35,17 +35,29 @@ iscc installer\setup.iss
 The compiled installer will be written to:
 
 ```
-installer\Output\BackupAgentSetup.exe
+installer\Output\BackupAgentSetup-<version>.exe
 ```
+
+`<version>` is `AppVersion` in `setup.iss`; keep it equal to `version` in the
+root `Cargo.toml`.
 
 ### 3. Run the installer
 
-Execute `BackupAgentSetup.exe` on a Windows 10+ machine with an administrator
+Execute `BackupAgentSetup-<version>.exe` on a Windows 10+ machine with an administrator
 account. The installer will:
 
 1. Copy both binaries to `%ProgramFiles%\BackupAgent\`
 2. Create a desktop shortcut for the GUI
 3. Register `backup-agent-service.exe` as a Windows Service (`BackupAgent`)
+
+## Releases
+
+Installers are not committed to git. Each version is a git tag (`v1.0.0`)
+with a GitHub Release that carries `BackupAgentSetup-<version>.exe` as an
+asset: download installers from the repository's **Releases** page.
+
+For Windows 7 SP1 / Server 2008 R2 / Server 2012 R2 use the legacy build from
+the `compat/windows-server-2012r2` branch, released as `v<version>-win2012r2`.
 
 ## Upgrade Behavior
 
@@ -73,6 +85,34 @@ The `AppId` GUID in `setup.iss` (`B7C2A4E1-3F8D-4C92-A1B5-9D6E0F2C7A34`) must
 **never be changed** after the first public release. Changing it breaks upgrade
 detection — Windows treats a different GUID as a new product, leaving the old
 installation orphaned in Add/Remove Programs.
+
+## Troubleshooting
+
+- **GUI does nothing when launched: no window, no error dialog, no
+  `Application` event log entry, process exits almost instantly.** This is
+  the signature of `egui_glow` failing to get an OpenGL 2.0+ context — common
+  on physical servers, since their onboard/BMC video chip (Matrox, ASPEED,
+  etc.) typically only exposes OpenGL 1.1 through Windows' generic display
+  driver. Running the GUI from `cmd.exe` with `tracing_subscriber` logging
+  confirms it:
+  ```
+  ERROR eframe::native::run: Exiting because of error: egui_glow: OpenGL: egui_glow requires opengl 2.0+.
+  ```
+  Fix: drop a software OpenGL implementation next to the GUI executable.
+  Windows loads a DLL from the application's own directory before falling
+  back to `System32`, so this doesn't touch the system-wide driver.
+  1. Get `opengl32.dll` from a prebuilt Mesa3D-for-Windows package — e.g.
+     [fdossena.com/Mesa3D](https://fdossena.com/?p=mesa%2Findex.frag) or
+     [pal1000/mesa-dist-win](https://github.com/pal1000/mesa-dist-win).
+  2. Copy it into `%ProgramFiles(x86)%\BackupAgent\` (next to
+     `backup-agent-gui.exe`).
+  3. Relaunch the GUI. It now renders via CPU software rasterization
+     (llvmpipe), which is plenty for this UI's complexity — no noticeable
+     slowdown.
+
+  As of this branch, `main.rs` also shows a native message box with these
+  same instructions if `eframe::run_native` fails, instead of exiting
+  silently (see `crates/gui/src/main.rs`).
 
 ## Known Limitations
 
