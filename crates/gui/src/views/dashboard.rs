@@ -1,5 +1,7 @@
 use eframe::egui;
 
+use crate::theme;
+
 use crate::app::Notifier;
 use crate::ipc_client::IpcClientHandle;
 use backup_agent_core::domain::config::AppConfig;
@@ -20,13 +22,13 @@ pub fn show(
             ui.vertical(|ui| {
         ui.heading(
             egui::RichText::new("Dashboard")
-                .color(egui::Color32::from_rgb(255, 255, 255))
+                .color(theme::TEXT_STRONG)
                 .size(24.0)
                 .strong(),
         );
         ui.label(
             egui::RichText::new("Monitor the status of your SQL Server backups in real-time.")
-                .color(egui::Color32::from_rgb(140, 155, 175))
+                .color(theme::TEXT_SUBTLE)
                 .size(13.0),
         );
         ui.add_space(20.0);
@@ -45,7 +47,7 @@ pub fn show(
                 };
                 ui.label(
                     egui::RichText::new(message)
-                        .color(egui::Color32::from_rgb(140, 155, 175))
+                        .color(theme::TEXT_SUBTLE)
                         .italics()
                 );
             });
@@ -96,7 +98,7 @@ pub fn show(
         // 2. Active Jobs
         ui.label(
             egui::RichText::new("Active Operations")
-                .color(egui::Color32::from_rgb(255, 255, 255))
+                .color(theme::TEXT_STRONG)
                 .size(18.0)
                 .strong(),
         );
@@ -104,8 +106,8 @@ pub fn show(
 
         if active_jobs.is_empty() {
             egui::Frame::none()
-                .fill(egui::Color32::from_rgb(20, 26, 38))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)))
+                .fill(theme::SURFACE)
+                .stroke(egui::Stroke::new(1.0, theme::RAISED))
                 .rounding(6.0)
                 .inner_margin(16.0)
                 .show(ui, |ui| {
@@ -113,7 +115,7 @@ pub fn show(
                     ui.vertical_centered(|ui| {
                         ui.label(
                             egui::RichText::new("No backup jobs are currently running.")
-                                .color(egui::Color32::from_rgb(148, 163, 184))
+                                .color(theme::TEXT_MUTED)
                                 .italics()
                         );
                     });
@@ -121,8 +123,8 @@ pub fn show(
         } else {
             for job in active_jobs {
                 egui::Frame::none()
-                    .fill(egui::Color32::from_rgb(30, 41, 59))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(51, 65, 85)))
+                    .fill(theme::RAISED)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
                     .rounding(6.0)
                     .inner_margin(12.0)
                     .show(ui, |ui| {
@@ -131,12 +133,12 @@ pub fn show(
                             ui.vertical(|ui| {
                                 ui.label(
                                     egui::RichText::new(format!("Backup of database '{}'", job.database_name))
-                                        .color(egui::Color32::from_rgb(255, 255, 255))
+                                        .color(theme::TEXT_STRONG)
                                         .strong()
                                 );
                                 ui.label(
                                     egui::RichText::new(format!("Status: {:?}", job.status))
-                                        .color(egui::Color32::from_rgb(99, 102, 241)) // Electric Indigo
+                                        .color(theme::ACCENT) // Electric Indigo
                                 );
                             });
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -153,15 +155,15 @@ pub fn show(
         // 3. Trigger manual backup
         ui.label(
             egui::RichText::new("Trigger Manual Backup")
-                .color(egui::Color32::from_rgb(255, 255, 255))
+                .color(theme::TEXT_STRONG)
                 .size(18.0)
                 .strong(),
         );
         ui.add_space(8.0);
 
         egui::Frame::none()
-            .fill(egui::Color32::from_rgb(20, 26, 38))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)))
+            .fill(theme::SURFACE)
+            .stroke(egui::Stroke::new(1.0, theme::RAISED))
             .rounding(8.0)
             .inner_margin(16.0)
             .show(ui, |ui| {
@@ -169,7 +171,7 @@ pub fn show(
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Select Database: ")
-                            .color(egui::Color32::from_rgb(226, 232, 240))
+                            .color(theme::TEXT_BODY)
                             .strong()
                     );
                     
@@ -185,7 +187,7 @@ pub fn show(
                     if db_list.is_empty() {
                         ui.label(
                             egui::RichText::new("No databases configured.")
-                                .color(egui::Color32::from_rgb(148, 163, 184))
+                                .color(theme::TEXT_MUTED)
                                 .italics()
                         );
                         return;
@@ -214,17 +216,17 @@ pub fn show(
                     let is_running = !active_jobs.is_empty();
                     let trigger_btn = egui::Button::new(
                         egui::RichText::new("🚀 Start Backup Now")
-                            .color(egui::Color32::from_rgb(255, 255, 255))
+                            .color(theme::TEXT_STRONG)
                             .strong()
                     )
-                    .fill(egui::Color32::from_rgb(99, 102, 241)) // Electric Indigo
+                    .fill(theme::ACCENT) // Electric Indigo
                     .min_size(egui::vec2(150.0, 32.0));
 
                     if is_running {
                         ui.add_enabled(false, trigger_btn);
                         ui.label(
                             egui::RichText::new("Please wait for active jobs to complete.")
-                                .color(egui::Color32::from_rgb(239, 68, 68))
+                                .color(theme::DANGER)
                                 .italics()
                         );
                     } else {
@@ -258,8 +260,8 @@ pub fn show(
 
 fn draw_card(ui: &mut egui::Ui, title: &str, value: &str, sub: &str) {
     egui::Frame::none()
-        .fill(egui::Color32::from_rgb(30, 41, 59)) // Slate-800
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(51, 65, 85))) // Slate-700
+        .fill(theme::RAISED) // Slate-800
+        .stroke(egui::Stroke::new(1.0, theme::BORDER)) // Slate-700
         .rounding(8.0)
         .inner_margin(16.0)
         .show(ui, |ui| {
@@ -268,14 +270,14 @@ fn draw_card(ui: &mut egui::Ui, title: &str, value: &str, sub: &str) {
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(title)
-                        .color(egui::Color32::from_rgb(148, 163, 184)) // Slate-400
+                        .color(theme::TEXT_MUTED) // Slate-400
                         .size(11.0)
                         .strong(),
                 );
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new(value)
-                        .color(egui::Color32::from_rgb(255, 255, 255))
+                        .color(theme::TEXT_STRONG)
                         .size(16.0)
                         .strong(),
                 );
@@ -283,7 +285,7 @@ fn draw_card(ui: &mut egui::Ui, title: &str, value: &str, sub: &str) {
                 
                 // Truncate the card subtext if it's too long, preventing it from overflowing the card boundary
                 let text = egui::RichText::new(sub)
-                    .color(egui::Color32::from_rgb(99, 102, 241)) // Electric Indigo
+                    .color(theme::ACCENT) // Electric Indigo
                     .size(10.5)
                     .italics();
                 ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Truncate));

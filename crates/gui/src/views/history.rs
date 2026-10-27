@@ -1,4 +1,6 @@
 use eframe::egui;
+
+use crate::theme;
 use backup_agent_core::domain::backup_result::{BackupResult, BackupStatus};
 
 fn draw_badge(ui: &mut egui::Ui, text: &str, text_color: egui::Color32, bg_color: egui::Color32) {
@@ -21,13 +23,13 @@ pub fn show(ui: &mut egui::Ui, history: Option<&[BackupResult]>, service_error: 
     ui.vertical(|ui| {
         ui.heading(
             egui::RichText::new("Backup History")
-                .color(egui::Color32::from_rgb(255, 255, 255))
+                .color(theme::TEXT_STRONG)
                 .size(24.0)
                 .strong(),
         );
         ui.label(
             egui::RichText::new("Outcome of past automated and manual backup executions.")
-                .color(egui::Color32::from_rgb(140, 155, 175))
+                .color(theme::TEXT_SUBTLE)
                 .size(13.0),
         );
         ui.add_space(20.0);
@@ -41,7 +43,7 @@ pub fn show(ui: &mut egui::Ui, history: Option<&[BackupResult]>, service_error: 
                     ui.add_space(10.0);
                     ui.label(
                         egui::RichText::new("Loading backup history...")
-                            .color(egui::Color32::from_rgb(140, 155, 175))
+                            .color(theme::TEXT_SUBTLE)
                             .italics(),
                     );
                 });
@@ -55,8 +57,8 @@ pub fn show(ui: &mut egui::Ui, history: Option<&[BackupResult]>, service_error: 
                     "No historical backup records found."
                 };
                 egui::Frame::none()
-                    .fill(egui::Color32::from_rgb(20, 26, 38))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)))
+                    .fill(theme::SURFACE)
+                    .stroke(egui::Stroke::new(1.0, theme::RAISED))
                     .rounding(6.0)
                     .inner_margin(20.0)
                     .show(ui, |ui| {
@@ -64,7 +66,7 @@ pub fn show(ui: &mut egui::Ui, history: Option<&[BackupResult]>, service_error: 
                         ui.vertical_centered(|ui| {
                             ui.label(
                                 egui::RichText::new(message)
-                                    .color(egui::Color32::from_rgb(148, 163, 184))
+                                    .color(theme::TEXT_MUTED)
                                     .italics(),
                             );
                         });
@@ -85,13 +87,13 @@ pub fn show(ui: &mut egui::Ui, history: Option<&[BackupResult]>, service_error: 
                     .striped(true)
                     .show(ui, |ui| {
                         // Header columns
-                        ui.label(egui::RichText::new("Start Time").strong().color(egui::Color32::from_rgb(255, 255, 255)));
-                        ui.label(egui::RichText::new("Database").strong().color(egui::Color32::from_rgb(255, 255, 255)));
-                        ui.label(egui::RichText::new("Status").strong().color(egui::Color32::from_rgb(255, 255, 255)));
-                        ui.label(egui::RichText::new("Size (Raw)").strong().color(egui::Color32::from_rgb(255, 255, 255)));
-                        ui.label(egui::RichText::new("Size (Zip)").strong().color(egui::Color32::from_rgb(255, 255, 255)));
-                        ui.label(egui::RichText::new("Duration").strong().color(egui::Color32::from_rgb(255, 255, 255)));
-                        ui.label(egui::RichText::new("Destination").strong().color(egui::Color32::from_rgb(255, 255, 255)));
+                        ui.label(egui::RichText::new("Start Time").strong().color(theme::TEXT_STRONG));
+                        ui.label(egui::RichText::new("Database").strong().color(theme::TEXT_STRONG));
+                        ui.label(egui::RichText::new("Status").strong().color(theme::TEXT_STRONG));
+                        ui.label(egui::RichText::new("Size (Raw)").strong().color(theme::TEXT_STRONG));
+                        ui.label(egui::RichText::new("Size (Zip)").strong().color(theme::TEXT_STRONG));
+                        ui.label(egui::RichText::new("Duration").strong().color(theme::TEXT_STRONG));
+                        ui.label(egui::RichText::new("Destination").strong().color(theme::TEXT_STRONG));
                         ui.end_row();
 
                         // Render history items in reverse order (newest first)
@@ -109,8 +111,8 @@ pub fn show(ui: &mut egui::Ui, history: Option<&[BackupResult]>, service_error: 
                                     draw_badge(
                                         ui,
                                         "Success",
-                                        egui::Color32::from_rgb(187, 247, 208), // Light green
-                                        egui::Color32::from_rgb(20, 83, 45) // Dark green
+                                        theme::BADGE_SUCCESS_TEXT, // Light green
+                                        theme::BADGE_SUCCESS_BG // Dark green
                                     );
                                 }
                                 BackupStatus::Failed => {
@@ -119,8 +121,8 @@ pub fn show(ui: &mut egui::Ui, history: Option<&[BackupResult]>, service_error: 
                                         draw_badge(
                                             ui,
                                             "Failed",
-                                            egui::Color32::from_rgb(254, 202, 202), // Light red
-                                            egui::Color32::from_rgb(127, 29, 29) // Dark red
+                                            theme::BADGE_FAILED_TEXT, // Light red
+                                            theme::BADGE_FAILED_BG
                                         );
                                     }).response.on_hover_text(err_msg);
                                 }
@@ -128,8 +130,8 @@ pub fn show(ui: &mut egui::Ui, history: Option<&[BackupResult]>, service_error: 
                                     draw_badge(
                                         ui,
                                         &format!("{:?}", item.status),
-                                        egui::Color32::from_rgb(254, 243, 199), // Light yellow
-                                        egui::Color32::from_rgb(120, 53, 4) // Dark amber
+                                        theme::BADGE_PENDING_TEXT, // Light yellow
+                                        theme::BADGE_PENDING_BG // Dark amber
                                     );
                                 }
                             }

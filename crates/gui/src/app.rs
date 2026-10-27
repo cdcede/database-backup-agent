@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 
 use crate::ipc_client::IpcClientHandle;
+use crate::theme;
 use crate::views;
 use backup_agent_core::domain::config::AppConfig;
 use backup_agent_core::domain::backup_job::BackupJob;
@@ -201,8 +202,8 @@ impl BackupAgentApp {
             .show(ctx, |ui| {
                 for toast in &self.toasts {
                     let (fill, color, icon) = match toast.kind {
-                        ToastKind::Success => (egui::Color32::from_rgb(15, 45, 25), egui::Color32::from_rgb(34, 197, 94), "✔"),
-                        ToastKind::Error => (egui::Color32::from_rgb(45, 15, 20), egui::Color32::from_rgb(239, 68, 68), "✖"),
+                        ToastKind::Success => (theme::SUCCESS_SURFACE, theme::SUCCESS, "✔"),
+                        ToastKind::Error => (theme::DANGER_SURFACE, theme::DANGER, "✖"),
                     };
                     egui::Frame::none()
                         .fill(fill)
@@ -257,7 +258,7 @@ impl eframe::App for BackupAgentApp {
         egui::SidePanel::left("sidebar")
             .resizable(false)
             .default_width(220.0)
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(9, 13, 22))) // Sleek deep navy-black
+            .frame(egui::Frame::none().fill(theme::SIDEBAR_BG)) // Sleek deep navy-black
             .show(ctx, |ui| {
                 ui.add_space(24.0);
 
@@ -265,7 +266,7 @@ impl eframe::App for BackupAgentApp {
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
                     egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(20, 26, 38))
+                        .fill(theme::SURFACE)
                         .rounding(8.0)
                         .inner_margin(egui::Margin::symmetric(14.0, 12.0))
                         .show(ui, |ui| {
@@ -273,14 +274,14 @@ impl eframe::App for BackupAgentApp {
                             ui.vertical_centered(|ui| {
                                 ui.label(
                                     egui::RichText::new("💾 Backup Agent")
-                                        .color(egui::Color32::from_rgb(255, 255, 255))
+                                        .color(theme::TEXT_STRONG)
                                         .size(17.0)
                                         .strong(),
                                 );
                                 ui.add_space(4.0);
                                 ui.label(
                                     egui::RichText::new("Automated SQL Backups")
-                                        .color(egui::Color32::from_rgb(148, 163, 184))
+                                        .color(theme::TEXT_MUTED)
                                         .size(10.0),
                                 );
                             });
@@ -303,7 +304,7 @@ impl eframe::App for BackupAgentApp {
                                 ui.painter().rect_filled(
                                     rect,
                                     2.0,
-                                    egui::Color32::from_rgb(99, 102, 241) // Electric Indigo accent
+                                    theme::ACCENT // Electric Indigo accent
                                 );
                                 ui.add_space(6.0);
                             } else {
@@ -311,13 +312,13 @@ impl eframe::App for BackupAgentApp {
                             }
 
                             let text_color = if is_active {
-                                egui::Color32::from_rgb(255, 255, 255)
+                                theme::TEXT_STRONG
                             } else {
-                                egui::Color32::from_rgb(148, 163, 184) // Slate-400
+                                theme::TEXT_MUTED // Slate-400
                             };
 
                             let fill_color = if is_active {
-                                egui::Color32::from_rgb(30, 41, 59) // Slate-800
+                                theme::RAISED // Slate-800
                             } else {
                                 egui::Color32::TRANSPARENT
                             };
@@ -350,15 +351,15 @@ impl eframe::App for BackupAgentApp {
         // Main central panel showing selected view contents
         egui::CentralPanel::default()
             .frame(egui::Frame::none()
-                .fill(egui::Color32::from_rgb(11, 15, 25)) // Slate-950 equivalent
+                .fill(theme::APP_BG) // Slate-950 equivalent
                 .inner_margin(egui::Margin::same(24.0))
             )
             .show(ctx, |ui| {
                 let mut retry_clicked = false;
                 if let Some(ref err) = self.error_message {
                     egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(45, 15, 20))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(127, 29, 29)))
+                        .fill(theme::DANGER_SURFACE)
+                        .stroke(egui::Stroke::new(1.0, theme::DANGER_BORDER))
                         .rounding(6.0)
                         .inner_margin(12.0)
                         .show(ui, |ui| {
@@ -368,12 +369,12 @@ impl eframe::App for BackupAgentApp {
                                     ui.set_max_width(ui.available_width() - retry_width);
                                     ui.label(
                                         egui::RichText::new("⚠ Backup Agent service unavailable")
-                                            .color(egui::Color32::from_rgb(239, 68, 68))
+                                            .color(theme::DANGER)
                                             .strong(),
                                     );
                                     ui.label(
                                         egui::RichText::new(err)
-                                            .color(egui::Color32::from_rgb(248, 180, 180))
+                                            .color(theme::DANGER_SOFT)
                                             .size(11.5),
                                     );
                                 });
@@ -415,12 +416,12 @@ impl eframe::App for BackupAgentApp {
 
 fn setup_custom_styles(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(99, 102, 241); // Electric Indigo active state
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(30, 41, 59); // Slate-800 hover
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(15, 23, 42); // Slate-900 inactive
-    visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_rgb(226, 232, 240); // Slate-200 text
-    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(9, 13, 22); // Main body background
-    visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(148, 163, 184); // Slate-400 labels
+    visuals.widgets.active.bg_fill = theme::ACCENT; // Electric Indigo active state
+    visuals.widgets.hovered.bg_fill = theme::RAISED; // Slate-800 hover
+    visuals.widgets.inactive.bg_fill = theme::SUNKEN; // Slate-900 inactive
+    visuals.widgets.inactive.fg_stroke.color = theme::TEXT_BODY; // Slate-200 text
+    visuals.widgets.noninteractive.bg_fill = theme::SIDEBAR_BG; // Main body background
+    visuals.widgets.noninteractive.fg_stroke.color = theme::TEXT_MUTED; // Slate-400 labels
     visuals.window_rounding = 8.0.into();
     ctx.set_visuals(visuals);
 }

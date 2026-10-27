@@ -5,6 +5,8 @@ use std::time::SystemTime;
 
 use eframe::egui;
 
+use crate::theme;
+
 use crate::app::Notifier;
 
 /// Number of log lines shown in the view.
@@ -55,13 +57,13 @@ pub fn show(ui: &mut egui::Ui, notifier: &Notifier) {
     ui.vertical(|ui| {
         ui.heading(
             egui::RichText::new("Service Logs")
-                .color(egui::Color32::from_rgb(255, 255, 255))
+                .color(theme::TEXT_STRONG)
                 .size(24.0)
                 .strong(),
         );
         ui.label(
             egui::RichText::new("Inspect recent output logs from the background daemon.")
-                .color(egui::Color32::from_rgb(140, 155, 175))
+                .color(theme::TEXT_SUBTLE)
                 .size(13.0),
         );
         ui.add_space(20.0);
@@ -79,18 +81,18 @@ pub fn show(ui: &mut egui::Ui, notifier: &Notifier) {
             ui.horizontal(|ui| {
                 let clear_btn = egui::Button::new(
                     egui::RichText::new("🗑 Clear Log File")
-                        .color(egui::Color32::from_rgb(255, 255, 255))
+                        .color(theme::TEXT_STRONG)
                         .strong()
                 )
-                .fill(egui::Color32::from_rgb(185, 28, 28))
+                .fill(theme::DANGER_BUTTON)
                 .min_size(egui::vec2(120.0, 28.0));
 
                 let refresh_btn = egui::Button::new(
                     egui::RichText::new("🔄 Refresh Logs")
-                        .color(egui::Color32::from_rgb(255, 255, 255))
+                        .color(theme::TEXT_STRONG)
                         .strong()
                 )
-                .fill(egui::Color32::from_rgb(30, 41, 59))
+                .fill(theme::RAISED)
                 .min_size(egui::vec2(120.0, 28.0));
 
                 if ui.add(clear_btn).clicked() {
@@ -117,7 +119,7 @@ pub fn show(ui: &mut egui::Ui, notifier: &Notifier) {
             if let Some(err) = &cache.error {
                 ui.label(
                     egui::RichText::new(format!("Error reading log file: {err}"))
-                        .color(egui::Color32::from_rgb(239, 68, 68))
+                        .color(theme::DANGER)
                 );
             } else {
                 // Use ScrollArea::both() to scroll horizontally and vertically
@@ -127,8 +129,8 @@ pub fn show(ui: &mut egui::Ui, notifier: &Notifier) {
                     .stick_to_bottom(true) // Auto-scroll to latest logs
                     .show(ui, |ui| {
                         egui::Frame::none()
-                            .fill(egui::Color32::from_rgb(15, 23, 42)) // dark slate/black terminal background
-                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(51, 65, 85))) // slate border
+                            .fill(theme::SUNKEN) // dark slate/black terminal background
+                            .stroke(egui::Stroke::new(1.0, theme::BORDER)) // slate border
                             .rounding(6.0)
                             .inner_margin(12.0)
                             .show(ui, |ui| {
@@ -136,15 +138,15 @@ pub fn show(ui: &mut egui::Ui, notifier: &Notifier) {
                                 ui.set_min_width(ui.available_width());
                                 ui.vertical(|ui| {
                                     for line in cache.lines.iter() {
-                                        let mut color = egui::Color32::from_rgb(203, 213, 225); // default light grey
+                                        let mut color = theme::LOG_TEXT;
                                         if line.contains("ERROR") || line.contains("FATAL") {
-                                            color = egui::Color32::from_rgb(248, 113, 113); // soft light red
+                                            color = theme::LOG_ERROR; // soft light red
                                         } else if line.contains("WARN") || line.contains("WARNING") {
-                                            color = egui::Color32::from_rgb(251, 146, 60); // soft light orange
+                                            color = theme::LOG_WARN; // soft light orange
                                         } else if line.contains("INFO") {
-                                            color = egui::Color32::from_rgb(94, 234, 212); // soft light teal
+                                            color = theme::LOG_INFO; // soft light teal
                                         } else if line.contains("DEBUG") {
-                                            color = egui::Color32::from_rgb(148, 163, 184); // dark grey/slate
+                                            color = theme::LOG_DEBUG;
                                         }
 
                                         // We use Label with wrap(false) to ensure horizontal scrolling works without wrapping
@@ -168,12 +170,12 @@ pub fn show(ui: &mut egui::Ui, notifier: &Notifier) {
                     ui.add_space(20.0);
                     ui.label(
                         egui::RichText::new("No service log file found yet.")
-                            .color(egui::Color32::from_rgb(110, 125, 150))
+                            .color(theme::TEXT_FAINT)
                             .italics()
                     );
                     ui.label(
                         egui::RichText::new(format!("Ensure the service is running and creating logs at:\n{}", log_path.display()))
-                            .color(egui::Color32::from_rgb(110, 125, 150))
+                            .color(theme::TEXT_FAINT)
                             .size(11.0)
                     );
                     ui.add_space(20.0);
@@ -208,10 +210,10 @@ fn show_clear_confirmation(
             ui.horizontal(|ui| {
                 let confirm_btn = egui::Button::new(
                     egui::RichText::new("Clear Log")
-                        .color(egui::Color32::from_rgb(255, 255, 255))
+                        .color(theme::TEXT_STRONG)
                         .strong()
                 )
-                .fill(egui::Color32::from_rgb(185, 28, 28));
+                .fill(theme::DANGER_BUTTON);
 
                 if ui.add(confirm_btn).clicked() {
                     match std::fs::write(log_path, "") {

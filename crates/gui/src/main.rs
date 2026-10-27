@@ -3,6 +3,7 @@
 mod app;
 mod views;
 mod ipc_client;
+mod theme;
 
 
 use app::BackupAgentApp;

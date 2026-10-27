@@ -1,4 +1,6 @@
 use eframe::egui;
+
+use crate::theme;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
@@ -304,13 +306,13 @@ pub fn show(
             ui.vertical(|ui| {
                 ui.heading(
                     egui::RichText::new("Settings")
-                        .color(egui::Color32::from_rgb(255, 255, 255))
+                        .color(theme::TEXT_STRONG)
                         .size(24.0)
                         .strong(),
                 );
                 ui.label(
                     egui::RichText::new("Configure parameters for SQL Server connections, scheduling, S3 storage, and notifications.")
-                        .color(egui::Color32::from_rgb(140, 155, 175))
+                        .color(theme::TEXT_SUBTLE)
                         .size(13.0),
                 );
                 ui.add_space(16.0);
@@ -319,12 +321,12 @@ pub fn show(
                 if !state.errors.is_empty() {
                     ui.group(|ui| {
                         ui.set_width(ui.available_width());
-                        ui.style_mut().visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(45, 15, 20);
+                        ui.style_mut().visuals.widgets.noninteractive.bg_fill = theme::DANGER_SURFACE;
                         ui.vertical(|ui| {
                             for err in &state.errors {
                                 ui.label(
                                     egui::RichText::new(format!("⚠️ {}", err))
-                                        .color(egui::Color32::from_rgb(239, 68, 68))
+                                        .color(theme::DANGER)
                                         .strong()
                                 );
                             }
@@ -336,12 +338,12 @@ pub fn show(
                 // -------------------------------------------------------------
                 // SQL Server Settings
                 // -------------------------------------------------------------
-                ui.label(egui::RichText::new("SQL Server Connection").size(16.0).strong().color(egui::Color32::from_rgb(255, 255, 255)));
+                ui.label(egui::RichText::new("SQL Server Connection").size(16.0).strong().color(theme::TEXT_STRONG));
                 ui.add_space(8.0);
 
                 egui::Frame::none()
-                    .fill(egui::Color32::from_rgb(20, 26, 38))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)))
+                    .fill(theme::SURFACE)
+                    .stroke(egui::Stroke::new(1.0, theme::RAISED))
                     .rounding(8.0)
                     .inner_margin(16.0)
                     .show(ui, |ui| {
@@ -383,10 +385,10 @@ pub fn show(
                             ui.horizontal(|ui| {
                                 let test_btn = egui::Button::new(
                                     egui::RichText::new("🔌 Test Connection & Fetch Databases")
-                                        .color(egui::Color32::from_rgb(255, 255, 255))
+                                        .color(theme::TEXT_STRONG)
                                         .strong()
                                 )
-                                .fill(egui::Color32::from_rgb(99, 102, 241)) // Electric Indigo
+                                .fill(theme::ACCENT) // Electric Indigo
                                 .min_size(egui::vec2(250.0, 32.0));
 
                                 if state.is_testing_connection {
@@ -437,10 +439,10 @@ pub fn show(
                                 if let Some(ref status) = state.connection_test_status {
                                     match status {
                                         Ok(msg) => {
-                                            ui.label(egui::RichText::new(format!("🟢 {}", msg)).color(egui::Color32::from_rgb(34, 197, 94)).strong());
+                                            ui.label(egui::RichText::new(format!("🟢 {}", msg)).color(theme::SUCCESS).strong());
                                         }
                                         Err(err) => {
-                                            ui.label(egui::RichText::new(format!("🔴 {}", err)).color(egui::Color32::from_rgb(239, 68, 68)).strong());
+                                            ui.label(egui::RichText::new(format!("🔴 {}", err)).color(theme::DANGER).strong());
                                         }
                                     }
                                 }
@@ -454,14 +456,14 @@ pub fn show(
                 // -------------------------------------------------------------
                 // Backup Tasks Manager
                 // -------------------------------------------------------------
-                ui.label(egui::RichText::new("📅 Backup Tasks & Schedules").size(16.0).strong().color(egui::Color32::from_rgb(255, 255, 255)));
+                ui.label(egui::RichText::new("📅 Backup Tasks & Schedules").size(16.0).strong().color(theme::TEXT_STRONG));
                 ui.add_space(4.0);
                 ui.label("Configure one or more backup tasks. Each task specifies a subset of databases and its own schedule/retention rules.");
                 ui.add_space(12.0);
 
                 egui::Frame::none()
-                    .fill(egui::Color32::from_rgb(20, 26, 38))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)))
+                    .fill(theme::SURFACE)
+                    .stroke(egui::Stroke::new(1.0, theme::RAISED))
                     .rounding(8.0)
                     .inner_margin(16.0)
                     .show(ui, |ui| {
@@ -479,10 +481,10 @@ pub fn show(
                                 
                                 let add_btn = egui::Button::new(
                                     egui::RichText::new("➕ Add Task")
-                                        .color(egui::Color32::from_rgb(255, 255, 255))
+                                        .color(theme::TEXT_STRONG)
                                         .strong()
                                 )
-                                .fill(egui::Color32::from_rgb(30, 41, 59))
+                                .fill(theme::RAISED)
                                 .min_size(egui::vec2(90.0, 24.0));
 
                                 if ui.add(add_btn).clicked() {
@@ -498,10 +500,10 @@ pub fn show(
                                 if state.tasks.len() > 1 {
                                     let del_btn = egui::Button::new(
                                         egui::RichText::new("🗑 Delete Task")
-                                            .color(egui::Color32::from_rgb(255, 255, 255))
+                                            .color(theme::TEXT_STRONG)
                                             .strong()
                                     )
-                                    .fill(egui::Color32::from_rgb(185, 28, 28))
+                                    .fill(theme::DANGER_BUTTON)
                                     .min_size(egui::vec2(90.0, 24.0));
 
                                     if ui.add(del_btn).clicked() {
@@ -542,7 +544,7 @@ pub fn show(
                                                     ui.label(
                                                         egui::RichText::new("Example: 09:00, 22:00. Note: multiple times must share the same minute (e.g. :00).")
                                                             .size(10.5)
-                                                            .color(egui::Color32::from_rgb(148, 163, 184))
+                                                            .color(theme::TEXT_MUTED)
                                                     );
                                                 }
                                                 ScheduleMode::Weekly => {
@@ -586,7 +588,7 @@ pub fn show(
                                                     ui.label(
                                                         egui::RichText::new("Format: sec min hour dom month dow year (e.g. 0 0/15 * * * * *)")
                                                             .size(10.5)
-                                                            .color(egui::Color32::from_rgb(148, 163, 184))
+                                                            .color(theme::TEXT_MUTED)
                                                     );
                                                 }
                                             }
@@ -613,7 +615,7 @@ pub fn show(
                                                 ui.label(
                                                     egui::RichText::new("💡 Tip: Click 'Test Connection' above to populate databases automatically.")
                                                         .size(11.0)
-                                                        .color(egui::Color32::from_rgb(148, 163, 184))
+                                                        .color(theme::TEXT_MUTED)
                                                 );
                                             });
                                             ui.end_row();
@@ -644,12 +646,12 @@ pub fn show(
                 // -------------------------------------------------------------
                 // Backup global storage settings
                 // -------------------------------------------------------------
-                ui.label(egui::RichText::new("Storage Configuration").size(16.0).strong().color(egui::Color32::from_rgb(255, 255, 255)));
+                ui.label(egui::RichText::new("Storage Configuration").size(16.0).strong().color(theme::TEXT_STRONG));
                 ui.add_space(8.0);
 
                 egui::Frame::none()
-                    .fill(egui::Color32::from_rgb(20, 26, 38))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)))
+                    .fill(theme::SURFACE)
+                    .stroke(egui::Stroke::new(1.0, theme::RAISED))
                     .rounding(8.0)
                     .inner_margin(16.0)
                     .show(ui, |ui| {
@@ -721,12 +723,12 @@ pub fn show(
                 // -------------------------------------------------------------
                 // Telegram alerts
                 // -------------------------------------------------------------
-                ui.label(egui::RichText::new("Telegram Notifications").size(16.0).strong().color(egui::Color32::from_rgb(255, 255, 255)));
+                ui.label(egui::RichText::new("Telegram Notifications").size(16.0).strong().color(theme::TEXT_STRONG));
                 ui.add_space(8.0);
 
                 egui::Frame::none()
-                    .fill(egui::Color32::from_rgb(20, 26, 38))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)))
+                    .fill(theme::SURFACE)
+                    .stroke(egui::Stroke::new(1.0, theme::RAISED))
                     .rounding(8.0)
                     .inner_margin(16.0)
                     .show(ui, |ui| {
@@ -757,10 +759,10 @@ pub fn show(
                 ui.horizontal(|ui| {
                     let save_btn = egui::Button::new(
                         egui::RichText::new("💾 Save Configurations & Reload Scheduler")
-                            .color(egui::Color32::from_rgb(255, 255, 255))
+                            .color(theme::TEXT_STRONG)
                             .strong()
                     )
-                    .fill(egui::Color32::from_rgb(99, 102, 241)) // Electric Indigo
+                    .fill(theme::ACCENT) // Electric Indigo
                     .min_size(egui::vec2(280.0, 36.0));
 
                     if state.is_saving {
@@ -822,10 +824,10 @@ pub fn show(
                     ui.add_space(8.0);
                     let reset_btn = egui::Button::new(
                         egui::RichText::new("🔄 Reset Form")
-                            .color(egui::Color32::from_rgb(255, 255, 255))
+                            .color(theme::TEXT_STRONG)
                             .strong()
                     )
-                    .fill(egui::Color32::from_rgb(30, 41, 59))
+                    .fill(theme::RAISED)
                     .min_size(egui::vec2(100.0, 36.0));
 
                     if ui.add(reset_btn).clicked() {
@@ -872,10 +874,10 @@ fn show_confirmation(ctx: &egui::Context, state: &mut SettingsState, config: &Ap
             ui.horizontal(|ui| {
                 let confirm_btn = egui::Button::new(
                     egui::RichText::new(confirm_label)
-                        .color(egui::Color32::from_rgb(255, 255, 255))
+                        .color(theme::TEXT_STRONG)
                         .strong()
                 )
-                .fill(egui::Color32::from_rgb(185, 28, 28));
+                .fill(theme::DANGER_BUTTON);
                 confirmed = ui.add(confirm_btn).clicked();
                 cancelled = ui.button("Cancel").clicked();
             });
