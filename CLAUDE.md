@@ -7,8 +7,8 @@ named pipe (bincode IPC).
 
 ## Branch and toolchain constraints (Windows Server 2012 R2)
 
-- Work on `compat/windows-server-2012r2` or branches created from it
-  (Google Drive mirror: `feat/google-drive-sync-2012r2`).
+- Work on `compat/windows-server-2012r2` (includes the Google Drive mirror) or
+  branches created from it.
 - Toolchain is pinned to **Rust 1.77.2** in `rust-toolchain.toml`: the last
   release that targets Windows 7 / 8 / 8.1 / Server 2012 R2. Never bump it.
 - **Never run `cargo update`** and do not add dependencies that need Cargo 1.85+
@@ -36,7 +36,7 @@ if the working tree has local changes.
    ```bat
    git status
    git fetch origin
-   git switch feat/google-drive-sync-2012r2
+   git switch compat/windows-server-2012r2
    git pull --ff-only
    ```
 2. Verify the toolchain: `cargo --version` must print `cargo 1.77.2`.
