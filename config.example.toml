@@ -49,7 +49,8 @@ provider = "local"
 # Other files in the folder are never touched. If the upload fails, no Drive
 # file is deleted.
 #
-# One-time setup (OAuth "Web application" credentials + refresh token):
+# One-time setup (OAuth "Web application" credentials + refresh token).
+# Full step-by-step guide: docs/google-drive-setup.md
 #   1. https://console.cloud.google.com -> create a project -> enable "Google Drive API".
 #   2. "OAuth consent screen": External, add your Google account as a test user,
 #      then PUBLISH the app ("In production"). Refresh tokens of apps left in
@@ -64,9 +65,9 @@ provider = "local"
 #      then "Exchange authorization code for tokens" -> copy the refresh token.
 #   5. (Optional) Create a folder in Drive and copy its ID: the last segment of
 #      https://drive.google.com/drive/folders/<FOLDER_ID>. Leave empty for root.
-#      With the drive.file scope, use a folder created by this app or the root;
-#      use the broader https://www.googleapis.com/auth/drive scope to target an
-#      existing folder you created manually.
+#      With the drive.file scope, use a folder created by this app or the root:
+#      a folder created by hand in Drive is invisible to the agent. Create the
+#      folder through the OAuth Playground with your own client (see the guide).
 #
 # [storage.google_drive]
 # enabled = true

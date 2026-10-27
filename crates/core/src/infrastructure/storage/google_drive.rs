@@ -66,13 +66,21 @@ impl Failure {
         Self { error: upload_error(message), retryable: true }
     }
 
-    /// Only 5xx and 429 are retried; other 4xx (e.g. revoked credentials) are permanent.
-    fn from_status(status: reqwest::StatusCode, message: String) -> Self {
+    /// Only 5xx, 429 and 403 rate limiting are retried; other 4xx (e.g. revoked
+    /// credentials, storage quota) are permanent.
+    fn from_status(status: reqwest::StatusCode, body: &str, message: String) -> Self {
         Self {
             error: upload_error(message),
-            retryable: status.is_server_error() || status.as_u16() == 429,
+            retryable: status.is_server_error()
+                || status.as_u16() == 429
+                || (status.as_u16() == 403 && is_rate_limit(body)),
         }
     }
+}
+
+/// Drive signals temporary throttling with 403 and these reasons (it uses 429 too).
+fn is_rate_limit(body: &str) -> bool {
+    body.contains("rateLimitExceeded") || body.contains("userRateLimitExceeded")
 }
 
 #[derive(Deserialize)]
@@ -145,6 +153,7 @@ impl GoogleDriveStorage {
             let body = response.text().await.unwrap_or_default();
             return Err(Failure::from_status(
                 status,
+                &body,
                 format!("Google OAuth token request rejected ({}): {}", status, body),
             ));
         }
@@ -208,6 +217,7 @@ impl GoogleDriveStorage {
             let body = response.text().await.unwrap_or_default();
             return Err(Failure::from_status(
                 status,
+                &body,
                 format!("Google Drive rejected the upload session ({}): {}", status, body),
             ));
         }
@@ -306,6 +316,7 @@ impl GoogleDriveStorage {
             let body = response.text().await.unwrap_or_default();
             return Err(Failure::from_status(
                 status,
+                &body,
                 format!("Google Drive file listing rejected ({}): {}", status, body),
             ));
         }
@@ -331,6 +342,7 @@ impl GoogleDriveStorage {
         let body = response.text().await.unwrap_or_default();
         Err(Failure::from_status(
             status,
+            &body,
             format!("Google Drive file deletion rejected ({}): {}", status, body),
         ))
     }
@@ -378,6 +390,7 @@ impl GoogleDriveStorage {
         let body = response.text().await.unwrap_or_default();
         Err(Failure::from_status(
             status,
+            &body,
             format!("Google Drive chunk upload rejected ({}): {}", status, body),
         ))
     }
@@ -559,6 +572,8 @@ mod tests {
         fail_token_once: bool,
         /// Answer the first session request with a 503.
         fail_session_once: bool,
+        /// Answer the first chunk with 403 userRateLimitExceeded (temporary throttling).
+        rate_limit_chunk_once: bool,
         /// Answer every token request with 400 invalid_grant (revoked credentials).
         reject_token: bool,
         token_requests: usize,
@@ -695,6 +710,14 @@ mod tests {
                 s.fail_once_at = None;
                 return Some(reply("503 Service Unavailable", "", "busy"));
             }
+            if s.rate_limit_chunk_once {
+                s.rate_limit_chunk_once = false;
+                return Some(reply(
+                    "403 Forbidden",
+                    "",
+                    r#"{"error":{"errors":[{"domain":"usageLimits","reason":"userRateLimitExceeded"}],"code":403}}"#,
+                ));
+            }
             assert_eq!(start, s.received.len() as u64, "chunk must continue at the acked offset");
             s.received.extend_from_slice(&body);
         }
@@ -830,6 +853,20 @@ mod tests {
 
         assert!(err.contains("storageQuotaExceeded"), "{err}");
         assert_eq!(state.lock().unwrap().chunk_puts, 1, "4xx is permanent: no retry");
+    }
+
+    #[tokio::test]
+    async fn retries_chunks_rejected_by_rate_limiting() {
+        let state = Arc::new(Mutex::new(FakeDrive {
+            rate_limit_chunk_once: true,
+            ..Default::default()
+        }));
+        let result = run_upload(state.clone(), b"0123456789").await;
+
+        assert!(result.is_ok(), "403 rate limiting is temporary and must be retried: {result:?}");
+        let s = state.lock().unwrap();
+        assert_eq!(s.received, b"0123456789");
+        assert_eq!(s.chunk_puts, 4, "3 chunks + the rate-limited one sent again");
     }
 
     #[test]
